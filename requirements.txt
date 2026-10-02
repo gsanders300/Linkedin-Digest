@@ -1,0 +1,11 @@
+# Direct runtime dependencies (pytz removed — stdlib zoneinfo used instead).
+# tzdata provides the IANA timezone database on Windows (no-op on Linux/macOS).
+# Versions are pinned so unattended CI runs are reproducible and an upstream
+# release cannot break the job without a deliberate bump. To refresh, bump a pin
+# below (or regenerate a fully-hashed lockfile:
+#   pip install pip-tools && pip-compile pyproject.toml -o requirements.txt).
+apify-client==3.0.4
+google-genai==2.10.0
+python-dotenv==1.2.2
+requests==2.34.2
+tzdata==2026.2

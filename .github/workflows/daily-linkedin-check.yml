@@ -1,0 +1,56 @@
+name: LinkedIn Profile Monitor
+
+on:
+  workflow_dispatch:
+
+# Serialize runs so a manual dispatch during an in-flight run cannot double-send
+# the digest or race on the seen_posts.json commit. A second trigger queues.
+concurrency:
+  group: linkedin-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # full history so the pre-push rebase can't hit shallow-clone issues
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run tests
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests -v
+      - name: Run monitor
+        env:
+          APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' }}
+        run: python src/main.py
+      - name: Persist seen post IDs
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/seen_posts.json
+          if git diff --cached --quiet; then
+            echo "No changes to seen_posts.json; nothing to commit."
+          else
+            git commit -m "chore: update seen post IDs [skip ci]"
+            # Rebase onto anything that landed during the run, then push.
+            git pull --rebase --autostash origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi
+

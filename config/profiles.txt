@@ -1,0 +1,7 @@
+# LinkedIn Profiles to Monitor
+# One URL per line
+# Comment out with # to disable a profile
+
+https://www.linkedin.com/in/satyanadella/
+https://www.linkedin.com/in/williamhgates/
+https://www.linkedin.com/in/reidhoffman/
