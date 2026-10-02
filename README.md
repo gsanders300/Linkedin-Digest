@@ -18,14 +18,20 @@ If scraping or summarization fails, you still get an email that explains what we
 
 ## What you need
 
-| Service | Used for | Cost |
-|---|---|---|
-| GitHub account | Runs the job on GitHub Actions and stores your secrets | Free tier is enough |
-| [Apify](https://apify.com/) account | Scrapes LinkedIn posts | Pay-per-result; see the [actor's pricing](https://apify.com/harvestapi/linkedin-profile-posts) |
-| [Google AI Studio](https://aistudio.google.com/) API key | Gemini summaries | Free tier should be enough; the code stays under 10 requests/minute |
-| Gmail account with 2-Step Verification | Sends the digest | Free |
+**You don't need to install anything.** The digest runs entirely on GitHub, and every setup step happens in your browser. It also never asks for your LinkedIn login.
 
-To run it locally you also need Python 3.11+ and, ideally, [uv](https://docs.astral.sh/uv/).
+You need 4 accounts:
+
+| Account | Used for | Cost |
+|---|---|---|
+| GitHub | Runs the daily job and stores your keys | Free. A run takes about 1-4 minutes for 30-odd profiles, well within GitHub's free Actions minutes for private repos |
+| [Apify](https://apify.com/) | Scrapes the LinkedIn posts | Billed per post scraped; see the [actor's pricing](https://apify.com/harvestapi/linkedin-profile-posts). It fetches at most 2 posts per profile per day, so 30 profiles means at most 60 results a day, and usually fewer |
+| [Google AI Studio](https://aistudio.google.com/) | Gemini API key for the summaries | Free tier should be enough; the code stays under 10 requests a minute |
+| Gmail or Google Workspace | Sends the digest | Free. Needs 2-Step Verification and App Passwords, which some work accounts block |
+
+Apify is the only part likely to cost money. The digest can go to any email address; only the sending account has to be Gmail.
+
+Installing software is only needed if you want to [run or change the code on your own computer](#running-locally-optional).
 
 ---
 
@@ -41,7 +47,7 @@ Forking also works and makes it easier to pull future updates, but forks of a pu
 
 1. **Apify token.** Sign up at [apify.com](https://apify.com/), then copy your API token from **Settings → API & Integrations**.
 2. **Gemini key.** Go to [Google AI Studio](https://aistudio.google.com/), click **Get API key**, and create one.
-3. **Gmail App Password.** Turn on [2-Step Verification](https://myaccount.google.com/signinoptions/twosv) for the Gmail account that will send the digest, then create an [App Password](https://myaccount.google.com/apppasswords). Copy the 16-character password **without spaces**. Don't use your normal Gmail password.
+3. **Gmail App Password.** Turn on [2-Step Verification](https://myaccount.google.com/signinoptions/twosv) for the Gmail account that will send the digest, then create an [App Password](https://myaccount.google.com/apppasswords). Copy the 16-character password **without spaces**. Don't use your normal Gmail password. If the App Passwords page says the setting isn't available, 2-Step Verification is off or your Google Workspace admin has blocked App Passwords.
 
 ### 3. Add the secrets to GitHub
 
@@ -67,11 +73,11 @@ https://www.linkedin.com/in/someprofile/
 https://www.linkedin.com/in/anotherprofile/
 ```
 
-Commit and push the file.
+The easiest way is on GitHub: open `config/profiles.txt` in your copy, click the pencil icon, paste your list, and click **Commit changes**.
 
 ### 5. Run it once by hand
 
-Go to **Actions → LinkedIn Profile Monitor → Run workflow**. The run takes a few minutes. When it finishes, check your inbox, and check that a `chore: update seen post IDs` commit appeared if any new posts were found.
+Go to **Actions → LinkedIn Profile Monitor → Run workflow**. The run takes a few minutes. When it finishes, check your inbox (and your spam folder the first time). If any new posts were found, a `chore: update seen post IDs` commit also appears in your copy.
 
 ### 6. Schedule the daily run
 
@@ -100,9 +106,11 @@ curl -X POST \
 
 ---
 
-## Running locally
+## Running locally (optional)
 
-Running locally makes real API calls: it spends Apify credits, sends a real email, and updates `data/seen_posts.json`.
+Only needed if you want to change the code or test a change before pushing it. Running locally makes real API calls: it spends Apify credits, sends a real email, and updates `data/seen_posts.json`.
+
+**Requirements:** [git](https://git-scm.com/downloads), plus either [uv](https://docs.astral.sh/uv/getting-started/installation/) (recommended) or Python 3.11+. uv downloads the right Python version for you if you don't have it.
 
 ```bash
 git clone https://github.com/<OWNER>/<REPO>.git
@@ -116,7 +124,7 @@ uv sync
 uv run --env-file .env python src/main.py
 ```
 
-Without uv:
+Without uv (macOS and Linux; on Windows, use the uv commands above):
 
 ```bash
 python3 -m venv .venv
@@ -133,7 +141,11 @@ python src/main.py
 The tests mock every external service, so they need no keys and cost nothing. The workflow runs them before every scrape.
 
 ```bash
+# With uv
 PYTHONPATH=src uv run python -m unittest discover -s tests -v
+
+# Without uv, inside the activated virtual environment
+PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
 ---
