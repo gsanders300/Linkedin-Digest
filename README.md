@@ -198,7 +198,8 @@ Design choices worth knowing:
 
 ```
 .
-├── .github/workflows/daily-linkedin-check.yml   GitHub Actions workflow
+├── .github/workflows/daily-linkedin-check.yml   The digest workflow
+├── .github/workflows/release.yml                Versions this repo's releases (does nothing in your copy)
 ├── config/profiles.txt                          Profiles to monitor
 ├── data/seen_posts.json                         Deduplication state (updated by CI)
 ├── src/

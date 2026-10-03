@@ -1,0 +1,43 @@
+name: Release
+
+# Every update to main gets the next version: patch by default, or minor/major when
+# the commit message contains #minor or #major.
+on:
+  push:
+    branches: [main]
+
+# One release at a time so two quick updates can't claim the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Only the original public repo cuts releases; private and template copies skip this.
+    if: github.repository == 'gsanders300/linkedin-digest'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # full history so existing version tags are visible
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          latest=$(git tag --list 'v*.*.*' --sort=-v:refname | head -n1)
+          if [ -z "$latest" ]; then
+            next="v1.0.0"
+          else
+            IFS=. read -r major minor patch <<< "${latest#v}"
+            if [[ "$MESSAGE" == *"#major"* ]]; then
+              next="v$((major + 1)).0.0"
+            elif [[ "$MESSAGE" == *"#minor"* ]]; then
+              next="v${major}.$((minor + 1)).0"
+            else
+              next="v${major}.${minor}.$((patch + 1))"
+            fi
+          fi
+          gh release create "$next" --target "$GITHUB_SHA" --title "$next" --notes "$MESSAGE"
