@@ -9,10 +9,9 @@ from google import genai
 
 MODEL = "gemini-3.1-flash-lite"
 
-# The Gemini client is created lazily rather than at import time. Building it at
-# import meant a missing or invalid GEMINI_API_KEY crashed the entire run on the
-# import line in main.py, before an error digest could even be sent. Lazy init
-# turns that into a caught, reportable error while still delivering the email.
+# The Gemini client is created lazily rather than at import time, so a missing or
+# invalid GEMINI_API_KEY becomes a caught, reportable error in the digest instead
+# of crashing main.py on import before any email can be sent.
 _client: genai.Client | None = None
 
 

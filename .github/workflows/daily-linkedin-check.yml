@@ -37,7 +37,6 @@ jobs:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
-          FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' }}
         run: python src/main.py
       - name: Persist seen post IDs
         if: success()

@@ -1,4 +1,3 @@
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -15,23 +14,8 @@ from utils import filter_new_posts
 EASTERN = ZoneInfo("America/New_York")
 
 
-def should_run_now() -> bool:
-    # Allow manual bypass via environment variable.
-    if os.getenv("FORCE_RUN") == "true":
-        print("Force run enabled. Bypassing time checks.")
-        return True
-
-    # The GitHub Actions cron schedule controls when this job runs.
-    # No redundant in-process time check is needed; always proceed.
-    return True
-
-
 def main() -> None:
     job_start = datetime.now(EASTERN)
-
-    if not should_run_now():
-        print("Not time to run yet.")
-        return
 
     profile_urls = load_profiles()
     seen_ids = load_seen_ids()
