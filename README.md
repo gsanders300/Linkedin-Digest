@@ -2,6 +2,12 @@
 
 A daily email digest of new LinkedIn posts from the people you choose, with a 2-sentence AI summary of each post. It runs on GitHub Actions, so you don't need a server.
 
+<p align="center">
+  <img src="docs/digest-example.png" alt="Example digest email: posts grouped by author, each with a title, timestamp, 2-sentence summary, and link, plus an Apify usage bar at the bottom" width="480">
+  <br>
+  <em>Example digest (fictional authors and posts)</em>
+</p>
+
 Each run:
 
 1. Scrapes the last 24 hours of posts from the profiles listed in `config/profiles.txt` with the [Apify](https://apify.com/) actor [`harvestapi/linkedin-profile-posts`](https://apify.com/harvestapi/linkedin-profile-posts).
@@ -217,6 +223,7 @@ Design choices worth knowing:
 ├── .github/workflows/release.yml                Versions this repo's releases (does nothing in your copy)
 ├── config/profiles.txt                          Profiles to monitor
 ├── data/seen_posts.json                         Deduplication state (updated by CI)
+├── docs/digest-example.png                      Example digest shown in this README
 ├── src/
 │   ├── main.py                                  Entry point and pipeline
 │   ├── apify_scraper.py                         Apify scrape and credit usage
