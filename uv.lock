@@ -449,7 +449,6 @@ wheels = [
 
 [[package]]
 name = "linkedin-digest"
-version = "1.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "apify-client" },

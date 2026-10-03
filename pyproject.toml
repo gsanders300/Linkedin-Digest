@@ -1,10 +1,11 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "linkedin-digest"
-version = "1.0.1"
+# Version comes from the latest vX.Y.Z git tag, which release.yml creates on every push to main.
+dynamic = ["version"]
 description = "Automated LinkedIn feed monitor with AI summaries and email digest"
 requires-python = ">=3.11"
 dependencies = [
@@ -20,3 +21,11 @@ where = ["src"]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+[tool.setuptools_scm]
+# Used when there is no git metadata, e.g. a "Download ZIP" copy.
+fallback_version = "0.0.0"
+
+[tool.uv]
+# Rebuild when commits or tags change so the installed version stays current.
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]
