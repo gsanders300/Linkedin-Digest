@@ -1,3 +1,3 @@
 """
-LinkedIn Profile Monitor
+LinkedIn Digest
 """

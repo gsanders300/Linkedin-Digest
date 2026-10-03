@@ -1,4 +1,4 @@
-# LinkedIn Profile Monitor
+# LinkedIn Digest
 
 A daily email digest of new LinkedIn posts from the people you choose, with a 2-sentence AI summary of each post. It runs on GitHub Actions, so you don't need a server.
 
@@ -24,10 +24,15 @@ You need 4 accounts:
 
 | Account | Used for | Cost |
 |---|---|---|
-| GitHub | Runs the daily job and stores your keys | Free. A run takes about 1-4 minutes for 30-odd profiles, well within GitHub's free Actions minutes for private repos |
-| [Apify](https://apify.com/) | Scrapes the LinkedIn posts | Billed per post scraped; see the [actor's pricing](https://apify.com/harvestapi/linkedin-profile-posts). It fetches at most 2 posts per profile per day, so 30 profiles means at most 60 results a day, and usually fewer |
-| [Google AI Studio](https://aistudio.google.com/) | Gemini API key for the summaries | Free tier should be enough; the code stays under 10 requests a minute |
-| Gmail or Google Workspace | Sends the digest | Free. Needs 2-Step Verification and App Passwords, which some work accounts block |
+| GitHub | Runs the daily job, stores your keys | Free |
+| [Apify](https://apify.com/) | Scrapes the posts | Pay per post |
+| [Google AI Studio](https://aistudio.google.com/) | Gemini summaries | Free tier |
+| Gmail or Google Workspace | Sends the digest | Free |
+
+- **GitHub:** a run takes about 1-4 minutes for 30-odd profiles, well within GitHub's free Actions minutes for private repos.
+- **Apify:** see the [actor's pricing](https://apify.com/harvestapi/linkedin-profile-posts). It fetches at most 2 posts per profile per day, so 30 profiles means at most 60 results a day, and usually fewer.
+- **Gemini:** the free tier should be enough; the code stays under 10 requests a minute.
+- **Gmail:** needs 2-Step Verification and App Passwords, which some work accounts block.
 
 Apify is the only part likely to cost money. The digest can go to any email address; only the sending account has to be Gmail.
 
@@ -39,9 +44,9 @@ Installing software is only needed if you want to [run or change the code on you
 
 ### 1. Make your own copy
 
-Click **Use this template → Create a new repository** at the top of this page. Making the copy **private** is recommended, because each run commits your profile list and post history to it.
+Click **Use this template → Create a new repository** at the top of this page. Making the copy **private** is recommended, because your profile list lives in the repo and each run commits the IDs of the posts it emailed you.
 
-Forking also works and makes it easier to pull future updates, but forks of a public repo are always public. GitHub disables Actions on new forks, so open your fork's **Actions** tab and click **I understand my workflows, go ahead and enable them**.
+Forking also works and makes it easier to pull future updates, but forks of a public repo are always public, so anyone could see who you follow. GitHub disables Actions on new forks, so open your fork's **Actions** tab and click **I understand my workflows, go ahead and enable them**.
 
 ### 2. Get your API keys
 
@@ -77,7 +82,7 @@ The easiest way is on GitHub: open `config/profiles.txt` in your copy, click the
 
 ### 5. Run it once by hand
 
-Go to **Actions → LinkedIn Profile Monitor → Run workflow**. The run takes a few minutes. When it finishes, check your inbox (and your spam folder the first time). If any new posts were found, a `chore: update seen post IDs` commit also appears in your copy.
+Go to **Actions → LinkedIn Digest → Run workflow**. The run takes a few minutes. When it finishes, check your inbox (and your spam folder the first time). If any new posts were found, a `chore: update seen post IDs` commit also appears in your copy.
 
 ### 6. Schedule the daily run
 
@@ -103,6 +108,8 @@ curl -X POST \
   https://api.github.com/repos/<OWNER>/<REPO>/actions/workflows/daily-linkedin-check.yml/dispatches \
   -d '{"ref":"<YOUR_DEFAULT_BRANCH>"}'
 ```
+
+To pause the digest, go to **Actions → LinkedIn Digest**, click **⋯**, and choose **Disable workflow**.
 
 ---
 
@@ -159,10 +166,18 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 | Gemini model | `MODEL` in `src/ai_summarizer.py` ([available models](https://ai.google.dev/gemini-api/docs/models)) |
 | Gemini rate limit | `REQUESTS_PER_MINUTE` and `MAX_WORKERS` in `src/ai_summarizer.py` |
 | Posts fetched per profile | `maxPosts` in `scrape_profiles()` in `src/apify_scraper.py` (default 2, to keep Apify costs down) |
-| Email design | CSS in `build_html_digest()` and `_build_post_card()` in `src/email_sender.py` |
-| Display time zone | `EASTERN` in `src/utils.py`, `src/email_sender.py`, and `src/main.py` (default `America/New_York`) |
+| Email design | The `<style>` block in `build_html_digest()`, plus the inline styles in the banner, notice, and footer helpers, in `src/email_sender.py` |
+| Display time zone | `EASTERN` in `src/utils.py` (default `America/New_York`) |
 | How many post IDs to remember | `MAX_SEEN_IDS` in `src/storage.py` (default 500) |
 | Run time | The cron expression or your external scheduler (see step 6) |
+
+---
+
+## Getting updates
+
+Template copies aren't linked to this repo, so updates don't reach yours on their own. To hear about new versions, click **Watch → Custom → Releases** on [the original repo](https://github.com/gsanders300/linkedin-digest). Each [release](https://github.com/gsanders300/linkedin-digest/releases) describes the change, and a compare link such as [`v1.0.1...v1.0.2`](https://github.com/gsanders300/linkedin-digest/compare/v1.0.1...v1.0.2) shows the exact file changes. Copy those changes into your copy by hand, and keep your own `config/profiles.txt`, `data/seen_posts.json`, and any files you customized.
+
+If you forked instead, click **Sync fork** on your fork's main page.
 
 ---
 
@@ -225,6 +240,7 @@ Design choices worth knowing:
 | Email shows a **Summarization Warning** | Gemini failed for some posts, often because of rate limits or a bad key. Those posts show "Summary unavailable." |
 | No email at all | Check the run log in the Actions tab. `Gmail authentication failed` means the App Password is wrong or 2-Step Verification is off. |
 | Scheduled run never starts | Make sure Actions is enabled on your copy and the workflow has a `schedule` block (see step 6). |
+| Same posts emailed twice | The **Persist seen post IDs** step couldn't push, so the post IDs weren't saved. Check that step's log; a branch protection rule or ruleset on your default branch is the usual cause. |
 
 ---
 

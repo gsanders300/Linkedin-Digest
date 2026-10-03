@@ -1,4 +1,4 @@
-name: LinkedIn Profile Monitor
+name: LinkedIn Digest
 
 on:
   workflow_dispatch:

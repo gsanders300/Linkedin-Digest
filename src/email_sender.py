@@ -7,11 +7,8 @@ from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
-from zoneinfo import ZoneInfo
 
-from utils import convert_to_eastern, extract_post_title, parse_post_date
-
-EASTERN = ZoneInfo("America/New_York")
+from utils import EASTERN, convert_to_eastern, extract_post_title, parse_post_date
 
 SMTP_TIMEOUT_SECONDS = 30
 SMTP_MAX_ATTEMPTS = 3

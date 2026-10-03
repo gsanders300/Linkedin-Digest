@@ -1,7 +1,6 @@
 import sys
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -9,9 +8,7 @@ from apify_scraper import scrape_profiles, get_apify_usage_stats
 from ai_summarizer import summarize_posts
 from email_sender import send_digest_email
 from storage import load_profiles, load_seen_ids, save_seen_ids
-from utils import filter_new_posts
-
-EASTERN = ZoneInfo("America/New_York")
+from utils import EASTERN, filter_new_posts
 
 
 def main() -> None:
