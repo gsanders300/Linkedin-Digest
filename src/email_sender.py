@@ -41,7 +41,7 @@ def _build_no_posts_notice() -> str:
     return """
     <div style="background:#f0f4f8;border-left:4px solid #90a4ae;border-radius:0 8px 8px 0;
                 padding:16px 20px;margin:20px 0;color:#546e7a;font-size:14px;">
-        No new posts from your LinkedIn network in the last 24 hours.
+        No new posts from your LinkedIn network since the last digest.
     </div>"""
 
 
@@ -232,7 +232,7 @@ def build_plain_digest(
                 ]
     elif not scrape_error:
         lines += [
-            "No new posts from your LinkedIn network in the last 24 hours.",
+            "No new posts from your LinkedIn network since the last digest.",
             "",
         ]
 

@@ -1,9 +1,7 @@
-# Direct runtime dependencies.
+# Direct runtime dependencies, for running locally with pip instead of uv.
+# CI installs the fully pinned uv.lock instead, so keep these pins in step with
+# pyproject.toml when bumping a dependency.
 # tzdata provides the IANA timezone database on Windows (no-op on Linux/macOS).
-# Versions are pinned so unattended CI runs are reproducible and an upstream
-# release cannot break the job without a deliberate bump. To refresh, bump a pin
-# below (or regenerate a fully-hashed lockfile:
-#   pip install pip-tools && pip-compile pyproject.toml -o requirements.txt).
 apify-client==3.0.4
 google-genai==2.10.0
 python-dotenv==1.2.2

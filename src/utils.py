@@ -3,14 +3,18 @@ from zoneinfo import ZoneInfo
 
 EASTERN = ZoneInfo("America/New_York")
 
+# Runs are daily, but look back further so a late or retried run doesn't miss posts
+# published since the previous run. seen_posts.json filters out the overlap.
+LOOKBACK_HOURS = 36
+
 
 def filter_new_posts(all_posts: list[dict]) -> list[dict]:
-    """Return only posts published within the last 24 hours (Eastern time)."""
+    """Return only posts published within the last LOOKBACK_HOURS (Eastern time)."""
     now_et = datetime.now(EASTERN)
-    cutoff_time = now_et - timedelta(hours=24)
+    cutoff_time = now_et - timedelta(hours=LOOKBACK_HOURS)
 
     print(
-        f"Filtering {len(all_posts)} posts for last 24 hours "
+        f"Filtering {len(all_posts)} posts for last {LOOKBACK_HOURS} hours "
         f"(since {cutoff_time.strftime('%b %d, %I:%M %p %Z')})..."
     )
 

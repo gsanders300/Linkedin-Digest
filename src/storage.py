@@ -18,17 +18,26 @@ MAX_SEEN_IDS = 500
 def load_profiles() -> list[str]:
     """Return the list of LinkedIn profile URLs from config/profiles.txt.
 
-    Blank lines and lines starting with '#' are ignored.
-    Raises FileNotFoundError if the profiles file does not exist.
+    Blank lines and lines starting with '#' are ignored, other non-profile lines are
+    skipped with a warning, and duplicates (ignoring a trailing slash) are dropped.
+    Raises FileNotFoundError if the profiles file does not exist, and ValueError if
+    it contains no profile URLs, so a bad file fails loudly instead of quietly
+    producing empty digests.
     """
     if not PROFILES_FILE.exists():
         raise FileNotFoundError(f"Profiles file not found: {PROFILES_FILE}")
-    profiles = [
-        line.strip()
-        for line in PROFILES_FILE.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.strip().startswith("#") and "linkedin.com/in/" in line
-    ]
-    return profiles
+    profiles: dict[str, str] = {}
+    for line in PROFILES_FILE.read_text(encoding="utf-8").splitlines():
+        url = line.strip()
+        if not url or url.startswith("#"):
+            continue
+        if "linkedin.com/in/" not in url:
+            print(f"Warning: skipping non-profile line in {PROFILES_FILE.name}: {url}")
+            continue
+        profiles.setdefault(url.rstrip("/"), url)
+    if not profiles:
+        raise ValueError(f"No LinkedIn profile URLs found in {PROFILES_FILE}.")
+    return list(profiles.values())
 
 
 def _read_seen_post_ids() -> list[str]:

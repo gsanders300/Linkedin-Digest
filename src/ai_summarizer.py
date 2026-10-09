@@ -1,3 +1,4 @@
+import math
 import os
 import random
 import threading
@@ -6,8 +7,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from google import genai
+from google.genai import types
 
 MODEL = "gemini-3.1-flash-lite"
+
+# The SDK sets no HTTP timeout by default, so one hung request could hold the job
+# until GitHub kills it and no digest is sent.
+REQUEST_TIMEOUT_MS = 30_000
 
 # The Gemini client is created lazily rather than at import time, so a missing or
 # invalid GEMINI_API_KEY becomes a caught, reportable error in the digest instead
@@ -22,7 +28,10 @@ def _get_client() -> genai.Client:
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY environment variable is not set.")
-        _client = genai.Client(api_key=api_key)
+        _client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_MS),
+        )
     return _client
 
 
@@ -44,16 +53,22 @@ class _PermanentGeminiError(RuntimeError):
     """A Gemini response that should not be retried."""
 
 
-def _wait_for_rate_slot() -> None:
-    """Reserve the next quota-safe request start time across all workers."""
+def _wait_for_rate_slot(deadline: float = math.inf) -> bool:
+    """Reserve the next quota-safe request start time across all workers.
+
+    Returns False, without reserving or waiting, if that start time is past deadline.
+    """
     global _next_request_at
     with _rate_limit_lock:
         now = time.monotonic()
         request_at = max(now, _next_request_at)
+        if request_at >= deadline:
+            return False
         _next_request_at = request_at + MIN_REQUEST_INTERVAL
     delay = request_at - now
     if delay > 0:
         time.sleep(delay)
+    return True
 
 
 def _error_status_code(exc: Exception) -> int | None:
@@ -104,11 +119,12 @@ LinkedIn Post:
 2-Sentence Summary:"""
 
 
-def summarize_post(post: dict) -> str:
+def summarize_post(post: dict, deadline: float = math.inf) -> str:
     """Summarize a single post, incorporating author and engagement context.
 
     Retries up to MAX_RETRIES times with exponential backoff on transient API
     errors before raising RuntimeError so the caller can decide how to handle it.
+    No request starts after deadline, a time.monotonic() value.
     """
     text = post.get("text", "")
     if not text:
@@ -124,8 +140,11 @@ def summarize_post(post: dict) -> str:
 
     last_exc: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
+        if not _wait_for_rate_slot(deadline):
+            raise RuntimeError(
+                f"Skipped post {post.get('id', '?')}: the summarization time limit ran out."
+            )
         try:
-            _wait_for_rate_slot()
             response = _get_client().models.generate_content(model=MODEL, contents=prompt)
             summary = response.text
             if not isinstance(summary, str) or not summary.strip():
@@ -139,6 +158,8 @@ def summarize_post(post: dict) -> str:
             exponential_delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
             delay = max(exponential_delay, _retry_after(exc) or 0.0)
             delay += random.uniform(0.0, 0.5)
+            if time.monotonic() + delay >= deadline:
+                break
             print(
                 f"Warning: Gemini attempt {attempt}/{MAX_RETRIES} failed for post "
                 f"{post.get('id', '?')} — retrying in {delay:.1f}s. Error: {exc}"
@@ -151,15 +172,18 @@ def summarize_post(post: dict) -> str:
     ) from last_exc
 
 
-def summarize_posts(posts: list[dict]) -> tuple[list[dict], Optional[str]]:
+def summarize_posts(
+    posts: list[dict], deadline: float = math.inf
+) -> tuple[list[dict], Optional[str]]:
     """Summarize all posts in parallel using a thread pool.
 
     Returns (posts_with_summaries, error_message).
     - On full success: (posts, None)
     - On partial/full failure: (posts, human-readable error string)
 
-    Posts that fail summarization receive "Summary unavailable." so the email
-    can still be sent with whatever content is available.
+    Posts that fail summarization, or are not reached by deadline (a time.monotonic()
+    value), receive "Summary unavailable." so the email can still be sent before the
+    workflow times out.
     """
     if not posts:
         return posts, None
@@ -177,7 +201,7 @@ def summarize_posts(posts: list[dict]) -> tuple[list[dict], Optional[str]]:
 
     # Map future -> post so results can be written back by reference.
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_post = {executor.submit(summarize_post, post): post for post in posts}
+        future_to_post = {executor.submit(summarize_post, post, deadline): post for post in posts}
 
         for future in as_completed(future_to_post):
             post = future_to_post[future]
@@ -192,7 +216,7 @@ def summarize_posts(posts: list[dict]) -> tuple[list[dict], Optional[str]]:
         # Deduplicate while preserving order.
         unique_errors = list(dict.fromkeys(errors))
         error_message = (
-            f"{len(errors)} post(s) could not be summarized due to Gemini API errors. "
+            f"{len(errors)} post(s) could not be summarized. "
             f"First error: {unique_errors[0]}"
         )
         return posts, error_message

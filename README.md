@@ -10,7 +10,7 @@ A daily email digest of new LinkedIn posts from the people you choose, with a 2-
 
 Each run:
 
-1. Scrapes the last 24 hours of posts from the profiles listed in `config/profiles.txt` with the [Apify](https://apify.com/) actor [`harvestapi/linkedin-profile-posts`](https://apify.com/harvestapi/linkedin-profile-posts).
+1. Scrapes the last 36 hours of posts from the profiles listed in `config/profiles.txt` with the [Apify](https://apify.com/) actor [`harvestapi/linkedin-profile-posts`](https://apify.com/harvestapi/linkedin-profile-posts).
 2. Drops posts it has already emailed you, using `data/seen_posts.json`.
 3. Summarizes each new post in 2 sentences with Google Gemini.
 4. Emails an HTML and plain-text digest through Gmail, grouped by author, with your Apify credit usage at the bottom.
@@ -74,7 +74,7 @@ In your copy, go to **Settings → Secrets and variables → Actions → New rep
 
 ### 4. Choose who to follow
 
-Replace the contents of `config/profiles.txt` with the profiles you want, one URL per line. Blank lines and lines starting with `#` are ignored, and only URLs containing `linkedin.com/in/` are loaded.
+Replace the contents of `config/profiles.txt` with the profiles you want, one URL per line. Blank lines and lines starting with `#` are ignored, and only URLs containing `linkedin.com/in/` are loaded. Other lines are skipped with a warning in the run log, and the run fails if no profile URLs are left.
 
 ```text
 # AI
@@ -123,7 +123,7 @@ To pause the digest, go to **Actions → LinkedIn Digest**, click **⋯**, and c
 
 Only needed if you want to change the code or test a change before pushing it. Running locally makes real API calls: it spends Apify credits, sends a real email, and updates `data/seen_posts.json`.
 
-**Requirements:** [git](https://git-scm.com/downloads), plus either [uv](https://docs.astral.sh/uv/getting-started/installation/) (recommended) or Python 3.11+. uv downloads the right Python version for you if you don't have it.
+**Requirements:** [git](https://git-scm.com/downloads), plus either [uv](https://docs.astral.sh/uv/getting-started/installation/) (recommended) or Python 3.14+. uv downloads the right Python version for you if you don't have it.
 
 ```bash
 git clone https://github.com/<OWNER>/<REPO>.git
@@ -195,7 +195,7 @@ config/profiles.txt
         ▼
 apify_scraper.scrape_profiles()     1 Apify batch run for all profiles
         │
-utils.filter_new_posts()            Keep posts from the last 24 hours
+utils.filter_new_posts()            Keep posts from the last 36 hours
         │
 dedup against data/seen_posts.json  Skip posts already emailed
         │
@@ -211,7 +211,8 @@ GitHub Actions commits data/seen_posts.json
 Design choices worth knowing:
 
 - **No database.** Deduplication state lives in `data/seen_posts.json`, which the workflow commits back after each successful run. It keeps the newest 500 IDs.
-- **Nothing is marked seen unless the email sent.** If scraping or email delivery fails, the job exits non-zero, the failure shows up in GitHub Actions, and the posts can still go out on the next run if they're within the 24-hour window.
+- **Nothing is marked seen unless the email sent.** If scraping or email delivery fails, the job exits non-zero, the failure shows up in GitHub Actions, and the posts can still go out on the next run if they're within the 36-hour window.
+- **36-hour lookback.** Each daily run looks back 36 hours, not 24, so a late scheduled start or a retry within 12 hours of a failure doesn't miss posts. `data/seen_posts.json` filters out the overlap, which costs a few re-fetched posts per run.
 - **One Apify run per day.** All profiles go into a single batch job, capped at 2 posts per profile, which is cheaper than one run per profile.
 - **Serialized runs.** A `concurrency` group stops a manual run and a scheduled run from double-sending or racing on the commit.
 
@@ -233,8 +234,8 @@ Design choices worth knowing:
 │   └── utils.py                                 Date and text helpers
 ├── tests/                                       Unit tests (unittest)
 ├── .env.example                                 Template for local secrets
-├── pyproject.toml / uv.lock                     Dependencies for uv
-└── requirements.txt                             Pinned dependencies for pip and CI
+├── pyproject.toml / uv.lock                     Dependencies for uv and CI
+└── requirements.txt                             Pinned dependencies for pip
 ```
 
 ---
@@ -244,7 +245,7 @@ Design choices worth knowing:
 | Symptom | Likely cause and fix |
 |---|---|
 | Email subject says **Scraper Error** | The banner in the email has the details. "Insufficient credits" means your Apify plan is used up for the month. |
-| Email shows a **Summarization Warning** | Gemini failed for some posts, often because of rate limits or a bad key. Those posts show "Summary unavailable." |
+| Email shows a **Summarization Warning** | Gemini failed for some posts, often because of rate limits or a bad key, or a very busy day hit the summarization time limit. Those posts show "Summary unavailable." |
 | No email at all | Check the run log in the Actions tab. `Gmail authentication failed` means the App Password is wrong or 2-Step Verification is off. |
 | Scheduled run never starts | Make sure Actions is enabled on your copy and the workflow has a `schedule` block (see step 6). |
 | Same posts emailed twice | The **Persist seen post IDs** step couldn't push, so the post IDs weren't saved. Check that step's log; a branch protection rule or ruleset on your default branch is the usual cause. |

@@ -1,11 +1,13 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from apify_client import ApifyClient
+
+from utils import LOOKBACK_HOURS, parse_post_date
 
 # harvestapi/linkedin-profile-posts — no cookies required, flat output schema.
 ACTOR_ID = "harvestapi/linkedin-profile-posts"
@@ -154,6 +156,7 @@ def scrape_profiles(profile_urls: list[str]) -> tuple[list, Optional[str]]:
     try:
         client = _get_client()
 
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
         run_input = {
             "targetUrls": profile_urls,
             "maxPosts": 2,          # Maximum 2 posts per profile (reduces billable results).
@@ -163,7 +166,8 @@ def scrape_profiles(profile_urls: list[str]) -> tuple[list, Optional[str]]:
             "scrapeReactions": False,
             "maxComments": 0,
             "maxReactions": 0,
-            "postedLimit": "24h",   # Actor-side filter; utils.filter_new_posts is a safety net.
+            # Actor-side filter; utils.filter_new_posts is a safety net.
+            "postedLimitDate": cutoff.isoformat(timespec="milliseconds"),
         }
 
         # Stop an Actor run after 10 minutes so it cannot hold the CI job open.
@@ -213,6 +217,18 @@ def scrape_profiles(profile_urls: list[str]) -> tuple[list, Optional[str]]:
                 "be processed. The Actor output schema may have changed."
             )
 
+        # Posts without a readable date are dropped by the lookback filter. If none can
+        # be read, the date field has likely changed, which would otherwise look like
+        # a quiet day.
+        undated = sum(1 for p in all_posts if parse_post_date(p["published_date"]) is None)
+        if undated:
+            print(f"Warning: {undated} post(s) have no readable publish date and will be skipped.")
+        if all_posts and undated == len(all_posts):
+            return [], (
+                f"Apify returned {len(all_posts)} post(s), but none had a readable "
+                "publish date. The Actor output schema may have changed."
+            )
+
         print(f"Successfully processed {len(all_posts)} posts total.")
         return all_posts, None
 
@@ -220,7 +236,7 @@ def scrape_profiles(profile_urls: list[str]) -> tuple[list, Optional[str]]:
         error_str = str(exc)
         # Apify surfaces credit exhaustion as an HTTP 402 or an error type string.
         if (
-            "402" in error_str
+            getattr(exc, "status_code", None) == 402
             or "insufficient-credits" in error_str.lower()
             or "credits" in error_str.lower()
         ):

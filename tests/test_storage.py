@@ -45,6 +45,31 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(payload["post_ids"][:2], ["old", "middle"])
         self.assertEqual(payload["post_ids"][-1], "new")
 
+    def test_profiles_skip_non_profile_lines_and_duplicates(self) -> None:
+        profiles_file = self.data_dir / "profiles.txt"
+        profiles_file.write_text(
+            "# comment\n\n"
+            "https://www.linkedin.com/in/a/\n"
+            "https://www.linkedin.com/in/a\n"
+            "https://www.linkedin.com/company/x/\n"
+            "https://www.linkedin.com/in/b/\n",
+            encoding="utf-8",
+        )
+        with patch.object(storage, "PROFILES_FILE", profiles_file):
+            self.assertEqual(
+                storage.load_profiles(),
+                ["https://www.linkedin.com/in/a/", "https://www.linkedin.com/in/b/"],
+            )
+
+    def test_profiles_file_without_urls_raises(self) -> None:
+        profiles_file = self.data_dir / "profiles.txt"
+        profiles_file.write_text(
+            "# https://www.linkedin.com/in/a/\n", encoding="utf-8"
+        )
+        with patch.object(storage, "PROFILES_FILE", profiles_file):
+            with self.assertRaises(ValueError):
+                storage.load_profiles()
+
 
 if __name__ == "__main__":
     unittest.main()
