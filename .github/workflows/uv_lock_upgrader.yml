@@ -1,0 +1,30 @@
+name: UV Lock Upgrade
+on:
+  schedule:
+    - cron: "0 8 * * 6"   # 3am ET Saturday (EST). Use "0 7 * * 6" in EDT.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv lock --upgrade
+      - run: uv sync --frozen
+      - run: uv run pytest   # replace with a command that proves your scripts still run
+      - id: cpr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: chore/uv-lock-upgrade
+          commit-message: "chore: uv lock --upgrade"
+          title: "chore: uv lock --upgrade"
+          add-paths: uv.lock
+      - if: steps.cpr.outputs.pull-request-number != ''
+        run: gh pr merge --squash --delete-branch "${{ steps.cpr.outputs.pull-request-number }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
