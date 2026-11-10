@@ -61,6 +61,58 @@ class GeminiTimeLimitTests(unittest.TestCase):
 
         sleep.assert_not_called()
 
+    def test_503_spike_recovers_within_retry_budget(self) -> None:
+        client = MagicMock()
+        client.models.generate_content.side_effect = [ApiError(503)] * 3 + [
+            MagicMock(text="Summary.")
+        ]
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_wait_for_rate_slot", return_value=True
+        ), patch.object(ai_summarizer.time, "sleep") as sleep:
+            summary = ai_summarizer.summarize_post({"id": "1", "text": "Hello"})
+
+        self.assertEqual(summary, "Summary.")
+        backoffs = [c.args[0] for c in sleep.call_args_list]
+        self.assertEqual(len(backoffs), 3)
+        self.assertGreaterEqual(backoffs[-1], 20.0)
+
+    def test_rate_limit_failure_explains_how_to_fix(self) -> None:
+        client = MagicMock()
+        client.models.generate_content.side_effect = ApiError(429)
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_wait_for_rate_slot", return_value=True
+        ), patch.object(ai_summarizer.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, "Lower REQUESTS_PER_MINUTE"):
+                ai_summarizer.summarize_post({"id": "1", "text": "Hello"})
+
+    def test_server_error_failure_has_no_rate_limit_hint(self) -> None:
+        client = MagicMock()
+        client.models.generate_content.side_effect = ApiError(503)
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_wait_for_rate_slot", return_value=True
+        ), patch.object(ai_summarizer.time, "sleep"):
+            with self.assertRaises(RuntimeError) as ctx:
+                ai_summarizer.summarize_post({"id": "1", "text": "Hello"})
+
+        self.assertNotIn("REQUESTS_PER_MINUTE", str(ctx.exception))
+
+    def test_fallback_model_used_after_primary_exhausts_retries(self) -> None:
+        client = MagicMock()
+        client.models.generate_content.side_effect = [
+            ApiError(503)
+        ] * ai_summarizer.MAX_RETRIES + [MagicMock(text="Fallback summary.")]
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_wait_for_rate_slot", return_value=True
+        ), patch.object(ai_summarizer.time, "sleep"):
+            summary = ai_summarizer.summarize_post({"id": "1", "text": "Hello"})
+
+        self.assertEqual(summary, "Fallback summary.")
+        models = [c.kwargs["model"] for c in client.models.generate_content.call_args_list]
+        self.assertEqual(
+            models,
+            [ai_summarizer.MODEL] * ai_summarizer.MAX_RETRIES + [ai_summarizer.FALLBACK_MODEL],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

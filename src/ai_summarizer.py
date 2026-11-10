@@ -9,7 +9,9 @@ from typing import Optional
 from google import genai
 from google.genai import types
 
-MODEL = "gemini-3.1-flash-lite"
+MODEL = "gemini-3.8-flash"
+# Tried after MODEL exhausts its retries, e.g. during a 503 "high demand" spike.
+FALLBACK_MODEL = "gemini-3.5-flash-lite"
 
 # The SDK sets no HTTP timeout by default, so one hung request could hold the job
 # until GitHub kills it and no digest is sent.
@@ -41,9 +43,10 @@ MAX_WORKERS = 4
 REQUESTS_PER_MINUTE = 9
 MIN_REQUEST_INTERVAL = 60.0 / REQUESTS_PER_MINUTE
 
-# Retry configuration for transient API failures.
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.0  # seconds; doubled on each subsequent attempt
+# Retry configuration for transient API failures. Gemini 503 "high demand" spikes
+# usually last tens of seconds, so back off 5s, 10s, 20s, 40s (~75s total).
+MAX_RETRIES = 5
+RETRY_BASE_DELAY = 5.0  # seconds; doubled on each subsequent attempt
 
 _rate_limit_lock = threading.Lock()
 _next_request_at = 0.0
@@ -122,8 +125,9 @@ LinkedIn Post:
 def summarize_post(post: dict, deadline: float = math.inf) -> str:
     """Summarize a single post, incorporating author and engagement context.
 
-    Retries up to MAX_RETRIES times with exponential backoff on transient API
-    errors before raising RuntimeError so the caller can decide how to handle it.
+    Tries MODEL, then FALLBACK_MODEL, each with up to MAX_RETRIES attempts and
+    exponential backoff on transient API errors. Raises RuntimeError if both fail
+    so the caller can decide how to handle it.
     No request starts after deadline, a time.monotonic() value.
     """
     text = post.get("text", "")
@@ -138,6 +142,19 @@ def summarize_post(post: dict, deadline: float = math.inf) -> str:
         post_text=text[:5000],
     )
 
+    errors: list[str] = []
+    for model in (MODEL, FALLBACK_MODEL):
+        try:
+            return _generate_with_retries(model, prompt, post, deadline)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+            if model != FALLBACK_MODEL:
+                print(f"Warning: {exc} Trying fallback model {FALLBACK_MODEL}.")
+    raise RuntimeError(" | ".join(errors))
+
+
+def _generate_with_retries(model: str, prompt: str, post: dict, deadline: float) -> str:
+    """Call one Gemini model with retries; raise RuntimeError when it gives up."""
     last_exc: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
         if not _wait_for_rate_slot(deadline):
@@ -145,7 +162,7 @@ def summarize_post(post: dict, deadline: float = math.inf) -> str:
                 f"Skipped post {post.get('id', '?')}: the summarization time limit ran out."
             )
         try:
-            response = _get_client().models.generate_content(model=MODEL, contents=prompt)
+            response = _get_client().models.generate_content(model=model, contents=prompt)
             summary = response.text
             if not isinstance(summary, str) or not summary.strip():
                 raise _PermanentGeminiError("Gemini returned an empty response.")
@@ -161,14 +178,22 @@ def summarize_post(post: dict, deadline: float = math.inf) -> str:
             if time.monotonic() + delay >= deadline:
                 break
             print(
-                f"Warning: Gemini attempt {attempt}/{MAX_RETRIES} failed for post "
+                f"Warning: {model} attempt {attempt}/{MAX_RETRIES} failed for post "
                 f"{post.get('id', '?')} — retrying in {delay:.1f}s. Error: {exc}"
             )
             time.sleep(delay)
 
+    hint = ""
+    if _error_status_code(last_exc) == 429:
+        hint = (
+            f" Rate limit hit: {model} allows fewer than REQUESTS_PER_MINUTE "
+            f"({REQUESTS_PER_MINUTE}) requests a minute, or its daily quota is used up. "
+            "Lower REQUESTS_PER_MINUTE in src/ai_summarizer.py or check your quota "
+            "in Google AI Studio."
+        )
     raise RuntimeError(
-        f"Gemini API error for post {post.get('id', '?')} after {attempt} "
-        f"attempt(s): {last_exc}"
+        f"{model} error for post {post.get('id', '?')} after {attempt} "
+        f"attempt(s): {last_exc}{hint}"
     ) from last_exc
 
 
