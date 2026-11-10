@@ -12,13 +12,20 @@ jobs:
   upgrade:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # full history so setuptools-scm sees the version tags
+      - uses: astral-sh/setup-uv@v10.2.0
+      # pyproject.toml pins direct deps with ==, so only indirect deps move.
       - run: uv lock --upgrade
-      - run: uv sync --frozen
-      - run: uv run pytest   # replace with a command that proves your scripts still run
+      # Same install and test steps as daily-linkedin-check.yml.
+      - run: uv sync --frozen --no-install-project
+      - name: Run tests
+        env:
+          PYTHONPATH: src
+        run: uv run --no-sync python -m unittest discover -s tests -v
       - id: cpr
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           branch: chore/uv-lock-upgrade
           commit-message: "chore: uv lock --upgrade"
