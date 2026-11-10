@@ -61,6 +61,19 @@ class ApifyNormalisationTests(unittest.TestCase):
         self.assertEqual(post["text"], "")
         self.assertEqual(post["likes"], 0)
 
+    def test_html_entities_are_decoded(self) -> None:
+        post = _normalise_post_item(
+            {
+                "id": "abc",
+                "author": {"name": "R&amp;D Team"},
+                "content": "Q&amp;A &lt;live&gt; &#39;today&#39;",
+            }
+        )
+
+        assert post is not None
+        self.assertEqual(post["profile_name"], "R&D Team")
+        self.assertEqual(post["text"], "Q&A <live> 'today'")
+
     def test_non_post_items_are_ignored(self) -> None:
         self.assertIsNone(_normalise_post_item({"type": "reaction", "id": "abc"}))
 

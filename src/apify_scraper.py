@@ -1,3 +1,4 @@
+import html
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -51,7 +52,8 @@ def _normalise_post_item(item: dict) -> dict | None:
     if not isinstance(author, dict):
         author = {}
     raw_name = author.get("name")
-    profile_name = raw_name.strip() if isinstance(raw_name, str) else ""
+    # The Actor returns HTML-entity-encoded text (e.g. "&amp;"); decode once here.
+    profile_name = html.unescape(raw_name).strip() if isinstance(raw_name, str) else ""
     profile_name = profile_name or "LinkedIn User"
     author_profile_url = _normalise_url(author.get("linkedinUrl"))
 
@@ -72,7 +74,7 @@ def _normalise_post_item(item: dict) -> dict | None:
         "profile_name": profile_name,
         "profile_url": author_profile_url,
         "post_url": f"{post_url}/" if post_url else "",
-        "text": content,
+        "text": html.unescape(content),
         "published_date": published_date,
         "likes": _safe_int(engagement.get("likes")),
         "comments": _safe_int(engagement.get("comments")),
