@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   upgrade:
@@ -24,14 +23,16 @@ jobs:
         env:
           PYTHONPATH: src
         run: uv run --no-sync python -m unittest discover -s tests -v
-      - id: cpr
-        uses: peter-evans/create-pull-request@v8
-        with:
-          branch: chore/uv-lock-upgrade
-          commit-message: "chore: uv lock --upgrade"
-          title: "chore: uv lock --upgrade"
-          add-paths: uv.lock
-      - if: steps.cpr.outputs.pull-request-number != ''
-        run: gh pr merge --squash --delete-branch "${{ steps.cpr.outputs.pull-request-number }}"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Same commit-and-push pattern as the seen_posts.json step in daily-linkedin-check.yml.
+      - name: Commit upgraded lock
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add uv.lock
+          if git diff --cached --quiet; then
+            echo "uv.lock unchanged; nothing to commit."
+          else
+            git commit -m "chore: uv lock --upgrade"
+            git pull --rebase --autostash origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi
