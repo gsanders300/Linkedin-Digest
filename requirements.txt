@@ -2,8 +2,8 @@
 # CI installs the fully pinned uv.lock instead, so keep these pins in step with
 # pyproject.toml when bumping a dependency.
 # tzdata provides the IANA timezone database on Windows (no-op on Linux/macOS).
-apify-client==3.0.4
-google-genai==2.10.0
-python-dotenv==1.2.2
+apify-client==3.4.0
+google-genai==2.34.0
+python-dotenv==1.2.4
 requests==2.34.2
-tzdata==2026.2
+tzdata==2026.6
