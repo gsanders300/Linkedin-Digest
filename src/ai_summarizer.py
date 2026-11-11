@@ -9,9 +9,10 @@ from typing import Optional
 from google import genai
 from google.genai import types
 
-MODEL = "gemini-3.8-flash"
+# gemini-3.8-flash's free tier allows only 20 requests a day, fewer than a daily digest needs.
+MODEL = "gemini-3.5-flash-lite"
 # Tried after MODEL exhausts its retries, e.g. during a 503 "high demand" spike.
-FALLBACK_MODEL = "gemini-3.5-flash-lite"
+FALLBACK_MODEL = "gemini-3.1-flash-lite"
 
 # The SDK sets no HTTP timeout by default, so one hung request could hold the job
 # until GitHub kills it and no digest is sent.
