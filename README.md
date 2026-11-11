@@ -151,7 +151,7 @@ python src/main.py
 
 ### Running the tests
 
-The tests mock every external service, so they need no keys and cost nothing. The workflow runs them before every scrape.
+The tests mock every external service, so they need no keys and cost nothing. The workflow runs them before every scrape, and the **Tests** workflow runs them on every push to `main` and every pull request.
 
 ```bash
 # With uv
@@ -250,7 +250,7 @@ Design choices worth knowing:
 - **36-hour lookback.** Each daily run looks back 36 hours, not 24, so a late scheduled start or a retry within 12 hours of a failure doesn't miss posts. `data/seen_posts.json` filters out the overlap, which costs a few re-fetched posts per run.
 - **One Apify run per day.** All profiles go into a single batch job, capped at 2 posts per profile, which is cheaper than one run per profile.
 - **Serialized runs.** A `concurrency` group stops a manual run and a scheduled run from double-sending or racing on the commit.
-- **Weekly dependency refresh.** `uv_lock_upgrader.yml` runs every Saturday at 08:00 UTC, also in your copy. It upgrades indirect dependencies in `uv.lock`, runs the tests, and commits the result straight to your default branch as `chore: uv lock --upgrade`. Direct dependencies stay pinned in `pyproject.toml`. To turn it off, disable **UV Lock Upgrade** in the Actions tab.
+- **Weekly dependency updates.** Dependabot (`.github/dependabot.yml`) opens 2 pull requests every Saturday at 3am ET: one for every package in `uv.lock`, including indirect dependencies, and one for the GitHub Actions. Major versions are skipped. In this repo, the **Dependabot auto-merge** workflow merges them once the **Tests** check passes, and each merge becomes a patch release. That needs a fine-grained token saved as the Dependabot secret `DEPENDABOT_AUTOMERGE_TOKEN`, **Allow auto-merge** in the repository settings, and a ruleset on `main` that requires the `test` check. In your copy, the auto-merge and **Dependabot watch** workflows do nothing, so the pull requests wait for you to review and merge them. To stop them, delete `.github/dependabot.yml`.
 
 ### Project layout
 
@@ -259,7 +259,10 @@ Design choices worth knowing:
 ├── .github/workflows/daily-linkedin-check.yml   The digest workflow
 ├── .github/workflows/private-digest.yml         Reusable digest run for a settings-only private repo
 ├── .github/workflows/release.yml                Versions this repo's releases (does nothing in your copy)
-├── .github/workflows/uv_lock_upgrader.yml       Weekly uv.lock refresh (runs in your copy too)
+├── .github/workflows/tests.yml                  Runs the tests on pushes and pull requests
+├── .github/workflows/dependabot-auto-merge.yml  Merges Dependabot pull requests after Tests (this repo only)
+├── .github/workflows/dependabot-watch.yml       Opens an issue for a stuck Dependabot pull request (this repo only)
+├── .github/dependabot.yml                       Weekly dependency update settings
 ├── config/profiles.txt                          Profiles to monitor
 ├── data/seen_posts.json                         Deduplication state (updated by CI)
 ├── docs/digest-example.png                      Example digest shown in this README

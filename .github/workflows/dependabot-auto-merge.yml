@@ -1,0 +1,31 @@
+name: Dependabot auto-merge
+
+# On Dependabot's PRs: turn on auto-merge. The main ruleset holds the merge until the
+# `test` check passes. The merge is a push to main, so release.yml cuts the next patch
+# release and the private digest runs it at its next run.
+#
+# DEPENDABOT_AUTOMERGE_TOKEN is a fine-grained PAT stored as a *Dependabot* secret. A merge
+# made with GITHUB_TOKEN would not start release.yml. This job holds a write token, so it
+# never checks out or runs the PR's code.
+on: pull_request
+
+permissions: {}
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]' && github.repository_owner == 'gsanders300'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Explicit subject and body: release.yml reads #minor/#major from the commit message,
+      # and Dependabot's changelog links can contain anchors like "#major-changes".
+      - name: Turn on auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.DEPENDABOT_AUTOMERGE_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          subject="${PR_TITLE//#/} (PR ${PR_NUMBER})"
+          gh pr merge --auto --squash --subject "$subject" \
+            --body "Dependabot update, merged automatically after the test check passed." "$PR_URL"

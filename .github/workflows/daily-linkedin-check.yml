@@ -16,12 +16,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0  # full history so the pre-push rebase can't hit shallow-clone issues
       # uv installs the Python version in .python-version.
       - name: Set up uv
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       # Install the exact versions in uv.lock, including indirect dependencies, so an
       # upstream release can't change an unattended run. The project itself isn't
       # installed because the code runs from src/, and --no-sync below keeps uv run

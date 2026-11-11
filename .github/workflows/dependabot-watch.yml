@@ -1,0 +1,66 @@
+name: Dependabot watch
+
+# Auto-merge normally lands a Dependabot PR within minutes, so one open longer than a day
+# is stuck: a failed test check, or an expired or revoked DEPENDABOT_AUTOMERGE_TOKEN.
+# Open one labeled issue (GitHub emails the assignee) instead of letting dependencies age.
+on:
+  schedule:
+    - cron: "0 14 * * *"  # daily, 9am ET (EST) / 10am ET (EDT)
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  watch:
+    if: github.repository_owner == 'gsanders300'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Report stuck Dependabot PRs
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+            });
+            const stuck = prs.filter(pr =>
+              pr.user.login === 'dependabot[bot]' && Date.parse(pr.created_at) < cutoff);
+            if (stuck.length === 0) {
+              core.info('No stuck Dependabot PRs.');
+              return;
+            }
+
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'dependabot-stuck',
+            });
+            if (open.data.length > 0) {
+              core.info('An open issue already reports this.');
+              return;
+            }
+
+            const list = stuck.map(pr => `- ${pr.html_url} ${pr.title}`).join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Dependabot update stuck',
+              assignees: [context.repo.owner],
+              labels: ['dependabot-stuck', 'automated'],
+              body: `These Dependabot PRs have been open for more than a day. Auto-merge didn't land them.
+
+            1. **Check the test check** on each PR. A failure means the update breaks something.
+            2. **Check the Dependabot auto-merge run** on each PR. An auth error means DEPENDABOT_AUTOMERGE_TOKEN expired or was revoked: make a new one and save it as a Dependabot secret with the same name.
+
+            ${list}
+
+            ---
+            *This issue was automatically created by the Dependabot watch workflow.*`,
+            });
