@@ -1,0 +1,41 @@
+version: 2
+
+# Weekly grouped updates. In gsanders300's repo, dependabot-auto-merge.yml merges them
+# once the test check passes, and each merge becomes a patch release. In a copy of this
+# template, the PRs wait for you to merge them. Major versions stay a manual decision.
+# Pushing a change to this file starts a Dependabot run right away.
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: America/New_York
+    # profiles.txt is LinkedIn profile URLs, not pip requirements; Dependabot would
+    # look each line up on PyPI. requirements.txt is a real requirements file.
+    exclude-paths:
+      - "config/profiles.txt"
+    # Without this, only the direct dependencies are checked, not the rest of uv.lock.
+    allow:
+      - dependency-type: all
+    groups:
+      python-packages:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: saturday
+      time: "03:00"
+      timezone: America/New_York
+    groups:
+      github-actions:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
