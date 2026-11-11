@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0  # full history so the pre-push rebase can't hit shallow-clone issues
       # uv installs the Python version in .python-version.
       - name: Set up uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       # Install the exact versions in uv.lock, including indirect dependencies, so an
       # upstream release can't change an unattended run. The project itself isn't
       # installed because the code runs from src/, and --no-sync below keeps uv run
