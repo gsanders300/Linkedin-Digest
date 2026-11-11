@@ -1,0 +1,103 @@
+name: Private digest
+
+# Reusable workflow for a private repository that holds only config/profiles.txt,
+# data/seen_posts.json, and the secrets (README "Always run the latest release").
+# It runs the latest release of this code, never main, and commits the updated
+# seen_posts.json back to the caller. The caller owns the trigger and concurrency
+# group, and must grant `contents: write`.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Release tag to run instead of the latest (rollback)'
+        type: string
+        required: false
+        default: ''
+    secrets:
+      APIFY_API_TOKEN:
+        required: true
+      GEMINI_API_KEY:
+        required: true
+      GMAIL_ADDRESS:
+        required: true
+      GMAIL_APP_PASSWORD:
+        required: true
+      RECIPIENT_EMAIL:
+        required: true
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # In a called workflow this is the caller's repository.
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # full history so the pre-push rebase can't hit shallow-clone issues
+
+      - name: Find Linkedin-Digest release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.ref }}
+        run: |
+          tag=${REF:-$(gh release view --repo gsanders300/Linkedin-Digest --json tagName -q .tagName)}
+          test -n "$tag"  # an empty ref would silently check out main
+          echo "Using Linkedin-Digest $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check out Linkedin-Digest code
+        uses: actions/checkout@v5
+        with:
+          repository: gsanders300/Linkedin-Digest
+          ref: ${{ steps.release.outputs.tag }}
+          path: app
+
+      # uv installs the Python version in app/.python-version.
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.2.0
+
+      # Same locked install and tests as daily-linkedin-check.yml. Tests run before the
+      # caller's files are copied in, so they can't touch the real profiles or state.
+      - name: Install dependencies
+        working-directory: app
+        run: uv sync --frozen --no-install-project
+      - name: Run tests
+        working-directory: app
+        env:
+          PYTHONPATH: src
+        run: uv run --no-sync python -m unittest discover -s tests -v
+
+      # The code reads both files from beside itself, so copy the caller's in.
+      - name: Use the caller's profiles and seen posts
+        run: |
+          cp config/profiles.txt app/config/profiles.txt
+          if [ -f data/seen_posts.json ]; then cp data/seen_posts.json app/data/seen_posts.json; fi
+
+      - name: Run monitor
+        working-directory: app
+        env:
+          APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+        run: uv run --no-sync python src/main.py
+
+      - name: Persist seen post IDs
+        if: success()
+        run: |
+          mkdir -p data
+          cp app/data/seen_posts.json data/seen_posts.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/seen_posts.json
+          if git diff --cached --quiet; then
+            echo "No changes to seen_posts.json; nothing to commit."
+          else
+            git commit -m "chore: update seen post IDs [skip ci]"
+            # Rebase onto anything that landed during the run, then push.
+            git pull --rebase --autostash origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi

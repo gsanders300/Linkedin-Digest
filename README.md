@@ -185,6 +185,40 @@ Template copies aren't linked to this repo, so updates don't reach yours on thei
 
 If you forked instead, click **Sync fork** on your fork's main page.
 
+### Always run the latest release
+
+To get every update without copying code, keep only your settings in a private repository and let this repo's code run on them:
+
+1. Make a private repository with your `config/profiles.txt` and, if you have one, your `data/seen_posts.json`.
+2. Add the 5 secrets from step 3 to it.
+3. Add `.github/workflows/daily-linkedin-check.yml` with this content:
+
+   ```yaml
+   name: LinkedIn Digest
+
+   on:
+     workflow_dispatch:
+
+   # A second trigger queues instead of racing the seen_posts.json commit.
+   concurrency:
+     group: linkedin-monitor
+     cancel-in-progress: false
+
+   jobs:
+     monitor:
+       permissions:
+         contents: write  # commits data/seen_posts.json back to this repo
+       uses: gsanders300/Linkedin-Digest/.github/workflows/private-digest.yml@main
+       secrets:
+         APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
+         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+         GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+         GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+         RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+   ```
+
+Each run uses the latest [release](https://github.com/gsanders300/linkedin-digest/releases), runs its tests, and commits the updated `data/seen_posts.json` back to your repository. To stay on an older release, add `with:` and `ref: v1.1.8` (the tag you want) under `monitor:`.
+
 ---
 
 ## How it works
@@ -223,6 +257,7 @@ Design choices worth knowing:
 ```
 .
 ├── .github/workflows/daily-linkedin-check.yml   The digest workflow
+├── .github/workflows/private-digest.yml         Reusable digest run for a settings-only private repo
 ├── .github/workflows/release.yml                Versions this repo's releases (does nothing in your copy)
 ├── .github/workflows/uv_lock_upgrader.yml       Weekly uv.lock refresh (runs in your copy too)
 ├── config/profiles.txt                          Profiles to monitor
