@@ -4,7 +4,7 @@
 # when you change a pin yourself.
 # tzdata provides the IANA timezone database on Windows (no-op on Linux/macOS).
 apify-client==3.5.1
-google-genai==2.34.0
+google-genai==3.2.0
 python-dotenv==1.2.4
 requests==2.34.2
 tzdata==2026.6
