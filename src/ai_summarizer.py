@@ -11,8 +11,9 @@ from google.genai import types
 
 # gemini-3.8-flash's free tier allows only 20 requests a day, fewer than a daily digest needs.
 MODEL = "gemini-3.5-flash-lite"
-# Tried after MODEL exhausts its retries, e.g. during a 503 "high demand" spike.
-FALLBACK_MODEL = "gemini-3.1-flash-lite"
+# Tried after MODEL exhausts its retries, e.g. during a 503 "high demand" spike. Its
+# 20-a-day free-tier limit covers a short spike, not a whole digest failing over.
+FALLBACK_MODEL = "gemini-3.8-flash"
 
 # The SDK sets no HTTP timeout by default, so one hung request could hold the job
 # until GitHub kills it and no digest is sent.
