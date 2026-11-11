@@ -9,7 +9,7 @@ dynamic = ["version"]
 description = "Automated LinkedIn feed monitor with AI summaries and email digest"
 requires-python = ">=3.14"
 dependencies = [
-    "apify-client==3.4.0",
+    "apify-client==3.5.1",
     "google-genai==2.34.0",
     "python-dotenv==1.2.4",
     "requests==2.34.2",
