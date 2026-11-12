@@ -7,13 +7,18 @@ name: Dependabot auto-merge
 # DEPENDABOT_AUTOMERGE_TOKEN is a fine-grained PAT stored as a *Dependabot* secret. A merge
 # made with GITHUB_TOKEN would not start release.yml. This job holds a write token, so it
 # never checks out or runs the PR's code.
+#
+# Major updates come from the "-major" groups in dependabot.yml, on branches like
+# dependabot/uv/python-packages-major-<hash>. They are skipped here and merged by hand.
 on: pull_request
 
 permissions: {}
 
 jobs:
   auto-merge:
-    if: github.actor == 'dependabot[bot]' && github.repository_owner == 'gsanders300'
+    if: >-
+      github.actor == 'dependabot[bot]' && github.repository_owner == 'gsanders300' &&
+      !contains(github.head_ref, '-major-')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

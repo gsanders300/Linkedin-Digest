@@ -29,8 +29,10 @@ jobs:
               repo: context.repo.repo,
               state: 'open',
             });
+            // Major-group PRs wait for a manual review, so they are not stuck.
             const stuck = prs.filter(pr =>
-              pr.user.login === 'dependabot[bot]' && Date.parse(pr.created_at) < cutoff);
+              pr.user.login === 'dependabot[bot]' && !pr.head.ref.includes('-major-') &&
+              Date.parse(pr.created_at) < cutoff);
             if (stuck.length === 0) {
               core.info('No stuck Dependabot PRs.');
               return;
