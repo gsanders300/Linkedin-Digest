@@ -12,7 +12,7 @@ Each run:
 
 1. Scrapes the last 36 hours of posts from the profiles listed in `config/profiles.txt` with the [Apify](https://apify.com/) actor [`harvestapi/linkedin-profile-posts`](https://apify.com/harvestapi/linkedin-profile-posts).
 2. Drops posts it has already emailed you, using `data/seen_posts.json`.
-3. Summarizes each new post in 2 sentences with Google Gemini, switching to a fallback model if the first one is overloaded or unavailable.
+3. Summarizes each new post in 2 sentences with Google Gemini, 10 posts per request, switching to a fallback model if the first one is overloaded or unavailable.
 4. Emails an HTML and plain-text digest through Gmail, grouped by author, with your Apify credit usage at the bottom.
 5. Commits the new post IDs back to the repo so tomorrow's run skips them.
 
@@ -37,7 +37,7 @@ You need 4 accounts:
 
 - **GitHub:** a run takes about 1-4 minutes for 30-odd profiles, well within GitHub's free Actions minutes for private repos.
 - **Apify:** see the [actor's pricing](https://apify.com/harvestapi/linkedin-profile-posts). It fetches at most 2 posts per profile per day, so 30 profiles means at most 60 results a day, and usually fewer.
-- **Gemini:** the free tier should be enough; the code stays under 10 requests a minute.
+- **Gemini:** the free tier should be enough. Posts go 10 to a request, so a typical day takes 2-4 requests, and the code stays under 5 requests a minute.
 - **Gmail:** needs 2-Step Verification and App Passwords, which some work accounts block.
 
 Apify is the only part likely to cost money. The digest can go to any email address; only the sending account has to be Gmail.
@@ -170,7 +170,7 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 | Who you follow | `config/profiles.txt` |
 | Summary length or style | `SUMMARY_PROMPT_TEMPLATE` in `src/ai_summarizer.py` |
 | Gemini model | `MODEL` and `FALLBACK_MODEL` in `src/ai_summarizer.py` ([available models](https://ai.google.dev/gemini-api/docs/models)) |
-| Gemini rate limit | `REQUESTS_PER_MINUTE` and `MAX_WORKERS` in `src/ai_summarizer.py` |
+| Gemini rate limit | `REQUESTS_PER_MINUTE`, `MAX_WORKERS`, and `BATCH_SIZE` (posts per request) in `src/ai_summarizer.py` |
 | Posts fetched per profile | `maxPosts` in `scrape_profiles()` in `src/apify_scraper.py` (default 2, to keep Apify costs down) |
 | Email design | The `<style>` block in `build_html_digest()`, plus the inline styles in the banner, notice, and footer helpers, in `src/email_sender.py` |
 | Display time zone | `EASTERN` in `src/utils.py` (default `America/New_York`) |
@@ -233,8 +233,9 @@ utils.filter_new_posts()            Keep posts from the last 36 hours
         │
 dedup against data/seen_posts.json  Skip posts already emailed
         │
-ai_summarizer.summarize_posts()     Gemini, ≤9 requests/min, retries with backoff,
-        │                           then retries on FALLBACK_MODEL
+ai_summarizer.summarize_posts()     Gemini, 10 posts per request, ≤4 requests/min,
+        │                           retries with backoff, then FALLBACK_MODEL,
+        │                           then 1 request per post the batch missed
         │
 email_sender.send_digest_email()    Gmail SMTP over SSL, retries transient failures
         │
@@ -286,7 +287,7 @@ Design choices worth knowing:
 | Symptom | Likely cause and fix |
 |---|---|
 | Email subject says **Scraper Error** | The banner in the email has the details. "Insufficient credits" means your Apify plan is used up for the month. |
-| Email shows a **Summarization Warning** | Gemini failed for some posts even after retrying and trying the fallback model. Those posts show "Summary unavailable." The warning quotes the first error: `503 UNAVAILABLE` means both models were overloaded, which is usually temporary. "Rate limit hit" means a model allows fewer requests than `REQUESTS_PER_MINUTE`, or its daily quota is used up. A key error means `GEMINI_API_KEY` is wrong, and "time limit ran out" means a very busy day hit the 15-minute summarization limit. |
+| Email shows a **Summarization Warning** | Gemini failed for some posts even after retrying and trying the fallback model. Those posts show "Summary unavailable." The warning quotes the first error: `503 UNAVAILABLE` means both models were overloaded, which is usually temporary. "Rate limit hit" means a model allows fewer requests than `REQUESTS_PER_MINUTE`. "Daily quota used up" means `MODEL`'s free tier allows fewer requests a day than the digest needs, so pick a model with a higher daily limit. `504 DEADLINE_EXCEEDED` means Gemini took longer than `REQUEST_TIMEOUT_MS`. A key error means `GEMINI_API_KEY` is wrong, and "time limit ran out" means a very busy day hit the 14-minute summarization limit. |
 | No email at all | Check the run log in the Actions tab. `Gmail authentication failed` means the App Password is wrong or 2-Step Verification is off. |
 | Scheduled run never starts | Make sure Actions is enabled on your copy and the workflow has a `schedule` block (see step 6). |
 | Same posts emailed twice | The **Persist seen post IDs** step couldn't push, so the post IDs weren't saved. Check that step's log; a branch protection rule or ruleset on your default branch is the usual cause. |

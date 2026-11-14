@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import unittest
@@ -85,6 +86,79 @@ class GeminiTimeLimitTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Lower REQUESTS_PER_MINUTE"):
                 ai_summarizer.summarize_post({"id": "1", "text": "Hello"})
 
+    def test_daily_quota_429_skips_retries_and_explains(self) -> None:
+        client = MagicMock()
+        error = ApiError(429)
+        error.args = ("429 RESOURCE_EXHAUSTED. quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier",)
+        client.models.generate_content.side_effect = error
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_wait_for_rate_slot", return_value=True
+        ), patch.object(ai_summarizer.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "Daily quota used up"):
+                ai_summarizer.summarize_post({"id": "1", "text": "Hello"})
+
+        self.assertEqual(client.models.generate_content.call_count, 2)  # 1 per model
+        sleep.assert_not_called()
+
+    def test_posts_are_batched_and_unicode_survives(self) -> None:
+        summary = "Isn’t “this” great 🚀."
+        posts = [{"id": str(i), "text": f"Post {i}"} for i in range(12)]
+
+        def respond(model, contents, config):
+            count = contents.count("=== Post ")
+            return MagicMock(text=json.dumps({str(n): summary for n in range(1, count + 1)}))
+
+        client = MagicMock()
+        client.models.generate_content.side_effect = respond
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_wait_for_rate_slot", return_value=True
+        ):
+            result, error = ai_summarizer.summarize_posts(posts)
+
+        self.assertIsNone(error)
+        self.assertEqual(client.models.generate_content.call_count, 2)  # 10 + 2
+        self.assertEqual([post["summary"] for post in result], [summary] * 12)
+
+    def test_post_missing_from_batch_is_summarized_alone(self) -> None:
+        posts = [{"id": "a", "text": "First"}, {"id": "b", "text": "Second"}]
+
+        def respond(model, contents, config):
+            if config is ai_summarizer._JSON_CONFIG:
+                return MagicMock(text='{"1": "Batch summary.", "9": "Unknown post."}')
+            return MagicMock(text="Single summary.")
+
+        client = MagicMock()
+        client.models.generate_content.side_effect = respond
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_wait_for_rate_slot", return_value=True
+        ):
+            result, error = ai_summarizer.summarize_posts(posts)
+
+        self.assertIsNone(error)
+        self.assertEqual(
+            [post["summary"] for post in result], ["Batch summary.", "Single summary."]
+        )
+        self.assertEqual(client.models.generate_content.call_count, 2)
+
+    def test_invalid_batch_json_falls_back_to_one_request_per_post(self) -> None:
+        posts = [{"id": "a", "text": "First"}, {"id": "b", "text": "Second"}]
+
+        def respond(model, contents, config):
+            if config is ai_summarizer._JSON_CONFIG:
+                return MagicMock(text='{"1": "cut off')
+            return MagicMock(text="Single summary.")
+
+        client = MagicMock()
+        client.models.generate_content.side_effect = respond
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_wait_for_rate_slot", return_value=True
+        ):
+            result, error = ai_summarizer.summarize_posts(posts)
+
+        self.assertIsNone(error)
+        self.assertEqual([post["summary"] for post in result], ["Single summary."] * 2)
+        self.assertEqual(client.models.generate_content.call_count, 3)  # 1 batch + 2 single
+
     def test_server_error_failure_has_no_rate_limit_hint(self) -> None:
         client = MagicMock()
         client.models.generate_content.side_effect = ApiError(503)
@@ -95,6 +169,7 @@ class GeminiTimeLimitTests(unittest.TestCase):
                 ai_summarizer.summarize_post({"id": "1", "text": "Hello"})
 
         self.assertNotIn("REQUESTS_PER_MINUTE", str(ctx.exception))
+        self.assertEqual(client.models.generate_content.call_count, 5)  # 4 + 1 fallback
 
     def test_fallback_model_used_after_primary_exhausts_retries(self) -> None:
         client = MagicMock()

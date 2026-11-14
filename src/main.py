@@ -12,8 +12,9 @@ from storage import load_profiles, load_seen_ids, save_seen_ids
 from utils import EASTERN, LOOKBACK_HOURS, filter_new_posts
 
 # Stop starting Gemini requests this long after the job starts, leaving room to send
-# the digest inside the workflow's 20-minute timeout-minutes limit.
-SUMMARY_DEADLINE_SECONDS = 15 * 60
+# the digest inside the workflow's 20-minute timeout-minutes limit, even after a
+# request started just before it runs the full REQUEST_TIMEOUT_MS (2 minutes).
+SUMMARY_DEADLINE_SECONDS = 14 * 60
 
 
 def main() -> None:

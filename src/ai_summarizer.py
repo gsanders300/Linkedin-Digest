@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import random
@@ -9,15 +10,18 @@ from typing import Optional
 from google import genai
 from google.genai import types
 
-# gemini-3.8-flash's free tier allows only 20 requests a day, fewer than a daily digest needs.
+# gemini-4-hydrogen's free tier allows 20 requests a day and 5 a minute, so posts are
+# summarized BATCH_SIZE to a request (see summarize_posts), not one request per post.
 MODEL = "gemini-4-hydrogen"
 # Tried after MODEL exhausts its retries, e.g. during a 503 "high demand" spike. Its
 # 20-a-day free-tier limit covers a short spike, not a whole digest failing over.
 FALLBACK_MODEL = "gemini-3.8-flash"
 
 # The SDK sets no HTTP timeout by default, so one hung request could hold the job
-# until GitHub kills it and no digest is sent.
-REQUEST_TIMEOUT_MS = 30_000
+# until GitHub kills it and no digest is sent. The SDK also sends this to Gemini as
+# X-Server-Timeout, so a slow response comes back as 504 DEADLINE_EXCEEDED. A 10-post
+# batch took 42-44s on gemini-4-hydrogen and hit 60s once under load.
+REQUEST_TIMEOUT_MS = 120_000
 
 # The Gemini client is created lazily rather than at import time, so a missing or
 # invalid GEMINI_API_KEY becomes a caught, reportable error in the digest instead
@@ -39,15 +43,23 @@ def _get_client() -> genai.Client:
     return _client
 
 
-# Bound request starts to nine per minute, leaving headroom under a 10 RPM quota.
-# Multiple workers still help when individual requests take longer than six seconds.
+# Bound request starts to four per minute, under gemini-4-hydrogen's 5 RPM free tier.
+# Multiple workers still help when individual requests take longer than 15 seconds.
 MAX_WORKERS = 4
-REQUESTS_PER_MINUTE = 9
+REQUESTS_PER_MINUTE = 4
 MIN_REQUEST_INTERVAL = 60.0 / REQUESTS_PER_MINUTE
 
+# Posts summarized per request, so a 20-35 post day takes 2-4 requests. Posts a batch
+# misses fall back to one request each. Same pattern as Youtube-Digest.
+BATCH_SIZE = 10
+BATCH_ATTEMPTS = 2  # per model, before the batch's posts go one at a time
+_JSON_CONFIG = types.GenerateContentConfig(response_mime_type="application/json")
+
 # Retry configuration for transient API failures. Gemini 503 "high demand" spikes
-# usually last tens of seconds, so back off 5s, 10s, 20s, 40s (~75s total).
-MAX_RETRIES = 5
+# usually last tens of seconds, so back off 5s, 10s, 20s (~35s total). A post gets
+# 5 tries in all, since each one spends daily quota.
+MAX_RETRIES = 4
+FALLBACK_ATTEMPTS = 1
 RETRY_BASE_DELAY = 5.0  # seconds; doubled on each subsequent attempt
 
 _rate_limit_lock = threading.Lock()
@@ -89,8 +101,13 @@ def _error_status_code(exc: Exception) -> int | None:
     return None
 
 
+def _is_daily_quota(exc: Exception) -> bool:
+    """True for a 429 from a per-day quota, which resets in hours, not seconds."""
+    return _error_status_code(exc) == 429 and "PerDay" in str(exc)
+
+
 def _is_retryable(exc: Exception) -> bool:
-    if isinstance(exc, _PermanentGeminiError):
+    if isinstance(exc, _PermanentGeminiError) or _is_daily_quota(exc):
         return False
     status = _error_status_code(exc)
     if status is None:
@@ -127,8 +144,8 @@ LinkedIn Post:
 def summarize_post(post: dict, deadline: float = math.inf) -> str:
     """Summarize a single post, incorporating author and engagement context.
 
-    Tries MODEL, then FALLBACK_MODEL, each with up to MAX_RETRIES attempts and
-    exponential backoff on transient API errors. Raises RuntimeError if both fail
+    Tries MODEL up to MAX_RETRIES times with exponential backoff on transient API
+    errors, then FALLBACK_MODEL up to FALLBACK_ATTEMPTS times. Raises RuntimeError if both fail
     so the caller can decide how to handle it.
     No request starts after deadline, a time.monotonic() value.
     """
@@ -145,9 +162,11 @@ def summarize_post(post: dict, deadline: float = math.inf) -> str:
     )
 
     errors: list[str] = []
-    for model in (MODEL, FALLBACK_MODEL):
+    for model, attempts in ((MODEL, MAX_RETRIES), (FALLBACK_MODEL, FALLBACK_ATTEMPTS)):
         try:
-            return _generate_with_retries(model, prompt, post, deadline)
+            return _generate_with_retries(
+                model, prompt, f"post {post.get('id', '?')}", deadline, attempts=attempts
+            )
         except RuntimeError as exc:
             errors.append(str(exc))
             if model != FALLBACK_MODEL:
@@ -155,23 +174,99 @@ def summarize_post(post: dict, deadline: float = math.inf) -> str:
     raise RuntimeError(" | ".join(errors))
 
 
-def _generate_with_retries(model: str, prompt: str, post: dict, deadline: float) -> str:
+BATCH_PROMPT_TEMPLATE = """You are analyzing LinkedIn posts. For EACH post below, write EXACTLY 2 concise, professional sentences that summarize it.
+Requirements:
+- Sentence 1: State the main topic or message
+- Sentence 2: Highlight the key insight, conclusion, or takeaway
+
+Keep it professional, informative, and business-focused. No more, no less than 2 sentences per post.
+
+Respond with ONLY a JSON object mapping each post number to its summary string, for example {{"1": "Summary.", "2": "Summary."}}.
+
+{posts_block}"""
+
+BATCH_POST_TEMPLATE = """=== Post {number} ===
+Author: {author_name}
+Engagement: {likes} likes · {comments} comments · {reposts} reposts
+
+{post_text}"""
+
+
+def _summarize_batch(posts: list[dict], deadline: float) -> dict[int, str]:
+    """Summarize posts in one request; return {index in posts: summary} for each usable answer.
+
+    Posts are numbered 1..n in the prompt rather than by their 19-digit IDs, which a
+    model can miscopy. Returns {} if both models fail or the JSON is unusable, so the
+    caller summarizes those posts one at a time.
+    """
+    posts_block = "\n\n".join(
+        BATCH_POST_TEMPLATE.format(
+            number=number,
+            author_name=post.get("profile_name", "Unknown"),
+            likes=post.get("likes", 0),
+            comments=post.get("comments", 0),
+            reposts=post.get("reposts", 0),
+            post_text=post["text"][:5000],
+        )
+        for number, post in enumerate(posts, 1)
+    )
+    prompt = BATCH_PROMPT_TEMPLATE.format(posts_block=posts_block)
+    label = f"batch of {len(posts)} posts"
+
+    for model in (MODEL, FALLBACK_MODEL):
+        try:
+            text = _generate_with_retries(
+                model, prompt, label, deadline, attempts=BATCH_ATTEMPTS, config=_JSON_CONFIG
+            )
+            break
+        except RuntimeError as exc:
+            print(f"Warning: {exc}")
+    else:
+        print(f"Warning: {label} failed on both models; summarizing them one at a time.")
+        return {}
+
+    try:
+        answers = json.loads(text)
+    except json.JSONDecodeError as exc:
+        print(f"Warning: {label} returned invalid JSON ({exc}); summarizing them one at a time.")
+        return {}
+    if not isinstance(answers, dict):
+        print(f"Warning: {label} returned JSON that isn't an object; summarizing them one at a time.")
+        return {}
+    return {
+        int(key) - 1: summary.strip()
+        for key, summary in answers.items()
+        if key.isdecimal()
+        and 1 <= int(key) <= len(posts)
+        and isinstance(summary, str)
+        and summary.strip()
+    }
+
+
+def _generate_with_retries(
+    model: str,
+    prompt: str,
+    label: str,
+    deadline: float,
+    attempts: int = MAX_RETRIES,
+    config: types.GenerateContentConfig | None = None,
+) -> str:
     """Call one Gemini model with retries; raise RuntimeError when it gives up."""
     last_exc: Exception | None = None
-    for attempt in range(1, MAX_RETRIES + 1):
+    for attempt in range(1, attempts + 1):
         if not _wait_for_rate_slot(deadline):
-            raise RuntimeError(
-                f"Skipped post {post.get('id', '?')}: the summarization time limit ran out."
-            )
+            raise RuntimeError(f"Skipped {label}: the summarization time limit ran out.")
         try:
-            response = _get_client().models.generate_content(model=model, contents=prompt)
+            response = _get_client().models.generate_content(
+                model=model, contents=prompt, config=config
+            )
             summary = response.text
             if not isinstance(summary, str) or not summary.strip():
                 raise _PermanentGeminiError("Gemini returned an empty response.")
             return summary.strip()
         except Exception as exc:
             last_exc = exc
-            if attempt >= MAX_RETRIES or not _is_retryable(exc):
+            if attempt >= attempts or not _is_retryable(exc):
                 break
 
             exponential_delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
@@ -180,13 +275,19 @@ def _generate_with_retries(model: str, prompt: str, post: dict, deadline: float)
             if time.monotonic() + delay >= deadline:
                 break
             print(
-                f"Warning: {model} attempt {attempt}/{MAX_RETRIES} failed for post "
-                f"{post.get('id', '?')} — retrying in {delay:.1f}s. Error: {exc}"
+                f"Warning: {model} attempt {attempt}/{attempts} failed for {label} "
+                f"— retrying in {delay:.1f}s. Error: {exc}"
             )
             time.sleep(delay)
 
     hint = ""
-    if _error_status_code(last_exc) == 429:
+    if _is_daily_quota(last_exc):
+        hint = (
+            f" Daily quota used up: {model}'s free tier allows too few requests a day. "
+            "Set MODEL in src/ai_summarizer.py to a model with a higher daily limit, "
+            "or enable billing in Google AI Studio."
+        )
+    elif _error_status_code(last_exc) == 429:
         hint = (
             f" Rate limit hit: {model} allows fewer than REQUESTS_PER_MINUTE "
             f"({REQUESTS_PER_MINUTE}) requests a minute, or its daily quota is used up. "
@@ -194,7 +295,7 @@ def _generate_with_retries(model: str, prompt: str, post: dict, deadline: float)
             "in Google AI Studio."
         )
     raise RuntimeError(
-        f"{model} error for post {post.get('id', '?')} after {attempt} "
+        f"{model} error for {label} after {attempt} "
         f"attempt(s): {last_exc}{hint}"
     ) from last_exc
 
@@ -202,7 +303,9 @@ def _generate_with_retries(model: str, prompt: str, post: dict, deadline: float)
 def summarize_posts(
     posts: list[dict], deadline: float = math.inf
 ) -> tuple[list[dict], Optional[str]]:
-    """Summarize all posts in parallel using a thread pool.
+    """Summarize posts BATCH_SIZE to a request, in parallel using a thread pool.
+
+    Posts a batch misses are summarized one request each with summarize_post().
 
     Returns (posts_with_summaries, error_message).
     - On full success: (posts, None)
@@ -226,9 +329,24 @@ def summarize_posts(
 
     errors: list[str] = []
 
-    # Map future -> post so results can be written back by reference.
+    # Posts with no text skip the batch; summarize_post() answers them without a request.
+    with_text = [post for post in posts if post.get("text")]
+    remaining = [post for post in posts if not post.get("text")]
+    batches = [with_text[i : i + BATCH_SIZE] for i in range(0, len(with_text), BATCH_SIZE)]
+
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_post = {executor.submit(summarize_post, post, deadline): post for post in posts}
+        results = executor.map(lambda batch: _summarize_batch(batch, deadline), batches)
+        for batch, summaries in zip(batches, results):
+            for index, post in enumerate(batch):
+                if index in summaries:
+                    post["summary"] = summaries[index]
+                else:
+                    remaining.append(post)
+
+        # Map future -> post so results can be written back by reference.
+        future_to_post = {
+            executor.submit(summarize_post, post, deadline): post for post in remaining
+        }
 
         for future in as_completed(future_to_post):
             post = future_to_post[future]
