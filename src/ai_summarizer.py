@@ -10,9 +10,9 @@ from typing import Optional
 from google import genai
 from google.genai import types
 
-# gemini-4-hydrogen's free tier allows 20 requests a day and 5 a minute, so posts are
-# summarized BATCH_SIZE to a request (see summarize_posts), not one request per post.
-MODEL = "gemini-4-hydrogen"
+# Free-tier daily quotas are small (gemini-4-hydrogen's was 20 requests a day), so posts
+# are summarized BATCH_SIZE to a request (see summarize_posts), not one request per post.
+MODEL = "gemini-3.5-flash-lite"
 # Tried after MODEL exhausts its retries, e.g. during a 503 "high demand" spike. Its
 # 20-a-day free-tier limit covers a short spike, not a whole digest failing over.
 FALLBACK_MODEL = "gemini-3.8-flash"
@@ -43,16 +43,18 @@ def _get_client() -> genai.Client:
     return _client
 
 
-# Bound request starts to four per minute, under gemini-4-hydrogen's 5 RPM free tier.
+# Bound request starts to four per minute, under the 5 RPM free tier gemini-4-hydrogen had.
 # Multiple workers still help when individual requests take longer than 15 seconds.
 MAX_WORKERS = 4
 REQUESTS_PER_MINUTE = 4
 MIN_REQUEST_INTERVAL = 60.0 / REQUESTS_PER_MINUTE
 
 # Posts summarized per request, so a 20-35 post day takes 2-4 requests. Posts a batch
-# misses fall back to one request each. Same pattern as Youtube-Digest.
+# reply misses fall back to one request each. Same pattern as Youtube-Digest.
 BATCH_SIZE = 10
-BATCH_ATTEMPTS = 2  # per model, before the batch's posts go one at a time
+# Per model. If both models fail, the batch's posts get no summary rather than one
+# request each: during a Gemini outage that fan-out spent the whole daily quota.
+BATCH_ATTEMPTS = 2
 _JSON_CONFIG = types.GenerateContentConfig(response_mime_type="application/json")
 
 # Retry configuration for transient API failures. Gemini 503 "high demand" spikes
@@ -64,6 +66,10 @@ RETRY_BASE_DELAY = 5.0  # seconds; doubled on each subsequent attempt
 
 _rate_limit_lock = threading.Lock()
 _next_request_at = 0.0
+
+# Models whose daily quota ran out this run. They get no more requests, since each
+# would fail the same way until the quota resets.
+_quota_exhausted: set[str] = set()
 
 
 class _PermanentGeminiError(RuntimeError):
@@ -196,8 +202,8 @@ def _summarize_batch(posts: list[dict], deadline: float) -> dict[int, str]:
     """Summarize posts in one request; return {index in posts: summary} for each usable answer.
 
     Posts are numbered 1..n in the prompt rather than by their 19-digit IDs, which a
-    model can miscopy. Returns {} if both models fail or the JSON is unusable, so the
-    caller summarizes those posts one at a time.
+    model can miscopy. Returns {} if the JSON is unusable, so the caller summarizes
+    those posts one at a time. Raises RuntimeError if both models fail.
     """
     posts_block = "\n\n".join(
         BATCH_POST_TEMPLATE.format(
@@ -213,6 +219,7 @@ def _summarize_batch(posts: list[dict], deadline: float) -> dict[int, str]:
     prompt = BATCH_PROMPT_TEMPLATE.format(posts_block=posts_block)
     label = f"batch of {len(posts)} posts"
 
+    errors: list[str] = []
     for model in (MODEL, FALLBACK_MODEL):
         try:
             text = _generate_with_retries(
@@ -220,10 +227,10 @@ def _summarize_batch(posts: list[dict], deadline: float) -> dict[int, str]:
             )
             break
         except RuntimeError as exc:
+            errors.append(str(exc))
             print(f"Warning: {exc}")
     else:
-        print(f"Warning: {label} failed on both models; summarizing them one at a time.")
-        return {}
+        raise RuntimeError(" | ".join(errors))
 
     try:
         answers = json.loads(text)
@@ -254,6 +261,8 @@ def _generate_with_retries(
     """Call one Gemini model with retries; raise RuntimeError when it gives up."""
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
+        if model in _quota_exhausted:
+            raise RuntimeError(f"Skipped {label}: {model}'s daily quota is used up.")
         if not _wait_for_rate_slot(deadline):
             raise RuntimeError(f"Skipped {label}: the summarization time limit ran out.")
         try:
@@ -266,6 +275,8 @@ def _generate_with_retries(
             return summary.strip()
         except Exception as exc:
             last_exc = exc
+            if _is_daily_quota(exc):
+                _quota_exhausted.add(model)
             if attempt >= attempts or not _is_retryable(exc):
                 break
 
@@ -305,7 +316,8 @@ def summarize_posts(
 ) -> tuple[list[dict], Optional[str]]:
     """Summarize posts BATCH_SIZE to a request, in parallel using a thread pool.
 
-    Posts a batch misses are summarized one request each with summarize_post().
+    Posts a batch reply misses are summarized one request each with summarize_post().
+    Posts in a batch that fails on both models are not retried one at a time.
 
     Returns (posts_with_summaries, error_message).
     - On full success: (posts, None)
@@ -335,8 +347,16 @@ def summarize_posts(
     batches = [with_text[i : i + BATCH_SIZE] for i in range(0, len(with_text), BATCH_SIZE)]
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        results = executor.map(lambda batch: _summarize_batch(batch, deadline), batches)
-        for batch, summaries in zip(batches, results):
+        batch_futures = [executor.submit(_summarize_batch, batch, deadline) for batch in batches]
+        for batch, batch_future in zip(batches, batch_futures):
+            try:
+                summaries = batch_future.result()
+            except RuntimeError as exc:
+                for post in batch:
+                    post["summary"] = "Summary unavailable."
+                errors.extend([str(exc)] * len(batch))
+                print(f"Warning: {exc}")
+                continue
             for index, post in enumerate(batch):
                 if index in summaries:
                     post["summary"] = summaries[index]

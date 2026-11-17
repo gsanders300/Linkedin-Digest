@@ -93,12 +93,53 @@ class GeminiTimeLimitTests(unittest.TestCase):
         client.models.generate_content.side_effect = error
         with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
             ai_summarizer, "_wait_for_rate_slot", return_value=True
-        ), patch.object(ai_summarizer.time, "sleep") as sleep:
+        ), patch.object(ai_summarizer.time, "sleep") as sleep, patch.object(
+            ai_summarizer, "_quota_exhausted", set()
+        ):
             with self.assertRaisesRegex(RuntimeError, "Daily quota used up"):
                 ai_summarizer.summarize_post({"id": "1", "text": "Hello"})
 
         self.assertEqual(client.models.generate_content.call_count, 2)  # 1 per model
         sleep.assert_not_called()
+
+    def test_model_with_used_up_daily_quota_gets_no_more_requests(self) -> None:
+        error = ApiError(429)
+        error.args = ("429 RESOURCE_EXHAUSTED. quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier",)
+
+        def respond(model, contents, config):
+            if model == ai_summarizer.MODEL:
+                raise error
+            return MagicMock(text="Fallback summary.")
+
+        client = MagicMock()
+        client.models.generate_content.side_effect = respond
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_wait_for_rate_slot", return_value=True
+        ), patch.object(ai_summarizer, "_quota_exhausted", set()):
+            for post_id in ("1", "2", "3"):
+                ai_summarizer.summarize_post({"id": post_id, "text": "Hello"})
+
+        models = [c.kwargs["model"] for c in client.models.generate_content.call_args_list]
+        self.assertEqual(models.count(ai_summarizer.MODEL), 1)
+        self.assertEqual(models.count(ai_summarizer.FALLBACK_MODEL), 3)
+
+    def test_failed_batch_is_not_retried_one_post_at_a_time(self) -> None:
+        posts = [{"id": "a", "text": "First"}, {"id": "b", "text": "Second"}]
+        client = MagicMock()
+        client.models.generate_content.side_effect = ApiError(503)
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_wait_for_rate_slot", return_value=True
+        ), patch.object(ai_summarizer.time, "sleep"):
+            result, error = ai_summarizer.summarize_posts(posts)
+
+        # BATCH_ATTEMPTS per model, and no single-post requests.
+        self.assertEqual(
+            client.models.generate_content.call_count, 2 * ai_summarizer.BATCH_ATTEMPTS
+        )
+        self.assertEqual(
+            [post["summary"] for post in result], ["Summary unavailable."] * 2
+        )
+        self.assertIn("2 post(s) could not be summarized", error or "")
 
     def test_posts_are_batched_and_unicode_survives(self) -> None:
         summary = "Isn’t “this” great 🚀."
