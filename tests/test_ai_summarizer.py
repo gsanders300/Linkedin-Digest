@@ -77,6 +77,22 @@ class GeminiTimeLimitTests(unittest.TestCase):
         self.assertEqual(len(backoffs), 3)
         self.assertGreaterEqual(backoffs[-1], 20.0)
 
+    def test_batch_503_spike_recovers_on_primary_model(self) -> None:
+        client = MagicMock()
+        client.models.generate_content.side_effect = [ApiError(503)] * 3 + [
+            MagicMock(text='{"1": "Summary."}')
+        ]
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_wait_for_rate_slot", return_value=True
+        ), patch.object(ai_summarizer.time, "sleep") as sleep:
+            result, error = ai_summarizer.summarize_posts([{"id": "1", "text": "Hello"}])
+
+        self.assertIsNone(error)
+        self.assertEqual(result[0]["summary"], "Summary.")
+        models = [c.kwargs["model"] for c in client.models.generate_content.call_args_list]
+        self.assertEqual(models, [ai_summarizer.MODEL] * 4)
+        self.assertGreaterEqual(sleep.call_args_list[-1].args[0], 20.0)
+
     def test_rate_limit_failure_explains_how_to_fix(self) -> None:
         client = MagicMock()
         client.models.generate_content.side_effect = ApiError(429)

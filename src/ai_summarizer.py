@@ -54,7 +54,9 @@ MIN_REQUEST_INTERVAL = 60.0 / REQUESTS_PER_MINUTE
 BATCH_SIZE = 10
 # Per model. If both models fail, the batch's posts get no summary rather than one
 # request each: during a Gemini outage that fan-out spent the whole daily quota.
-BATCH_ATTEMPTS = 2
+# 4 tries back off 5s, 10s, 20s, enough to outlast a typical 503 spike. With 2 tries
+# (one 5s wait), both models 503'd on 2026-11-21 and a whole batch went unsummarized.
+BATCH_ATTEMPTS = 4
 _JSON_CONFIG = types.GenerateContentConfig(response_mime_type="application/json")
 
 # Retry configuration for transient API failures. Gemini 503 "high demand" spikes
