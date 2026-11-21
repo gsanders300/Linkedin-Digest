@@ -378,7 +378,9 @@ def summarize_posts(
 
     Posts that fail summarization, or are not reached by deadline (a time.monotonic()
     value), receive "Summary unavailable." so the email can still be sent before the
-    workflow times out.
+    workflow times out. Each summarized post also gets a "model" key naming the model
+    that answered, and every retry is recorded for retry_report(); the email's run
+    status block reads both.
     """
     if not posts:
         return posts, None
