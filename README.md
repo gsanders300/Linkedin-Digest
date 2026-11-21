@@ -16,7 +16,7 @@ Each run:
 4. Emails an HTML and plain-text digest through Gmail, grouped by author, with your Apify credit usage at the bottom.
 5. Commits the new post IDs back to the repo so tomorrow's run skips them.
 
-If scraping or summarization fails, you still get an email that explains what went wrong.
+If scraping or summarization fails, you still get an email that explains what went wrong. Every email opens with a **Run status** block: any problems, every retry and what caused it, and which Gemini model summarized how many posts. The subject ends in `[problems]` when something failed.
 
 > **Disclaimer:** This is an unofficial personal project, not affiliated with or endorsed by LinkedIn or Apify. Scraping is done by a third-party Apify actor. You're responsible for making sure your use complies with LinkedIn's User Agreement, Apify's terms, and the laws that apply to you. Only monitor public content.
 
@@ -287,7 +287,7 @@ Design choices worth knowing:
 | Symptom | Likely cause and fix |
 |---|---|
 | Email subject says **Scraper Error** | The banner in the email has the details. "Insufficient credits" means your Apify plan is used up for the month. |
-| Email shows a **Summarization Warning** | Gemini failed for some posts even after retrying and trying the fallback model. Those posts show "Summary unavailable." The warning quotes the first error: `503 UNAVAILABLE` means both models were overloaded, which is usually temporary. "Rate limit hit" means a model allows fewer requests than `REQUESTS_PER_MINUTE`. "Daily quota used up" means `MODEL`'s free tier allows fewer requests a day than the digest needs, so pick a model with a higher daily limit. `504 DEADLINE_EXCEEDED` means Gemini took longer than `REQUEST_TIMEOUT_MS`. A key error means `GEMINI_API_KEY` is wrong, and "time limit ran out" means a very busy day hit the 14-minute summarization limit. |
+| Email shows a **Summarization Warning** | Gemini failed for some posts even after retrying and trying the fallback model. Those posts show "Summary unavailable." The warning lists each distinct cause with its post count: "Gemini overloaded (503)" means both models were overloaded, which is usually temporary. "Rate limit hit" means a model allows fewer requests than `REQUESTS_PER_MINUTE`. "Daily quota used up" means `MODEL`'s free tier allows fewer requests a day than the digest needs, so pick a model with a higher daily limit. "Gemini timed out (504)" means Gemini took longer than `REQUEST_TIMEOUT_MS`. A key error means `GEMINI_API_KEY` is wrong, and "time limit ran out" means a very busy day hit the 14-minute summarization limit. |
 | No email at all | Check the run log in the Actions tab. `Gmail authentication failed` means the App Password is wrong or 2-Step Verification is off. |
 | Scheduled run never starts | Make sure Actions is enabled on your copy and the workflow has a `schedule` block (see step 6). |
 | Same posts emailed twice | The **Persist seen post IDs** step couldn't push, so the post IDs weren't saved. Check that step's log; a branch protection rule or ruleset on your default branch is the usual cause. |

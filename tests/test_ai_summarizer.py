@@ -2,9 +2,11 @@ import json
 import os
 import time
 import unittest
+from collections import Counter
 from unittest.mock import MagicMock, patch
 
 import ai_summarizer
+import email_sender
 from ai_summarizer import _is_retryable
 
 
@@ -38,10 +40,14 @@ class GeminiTimeLimitTests(unittest.TestCase):
     def test_expired_deadline_skips_requests_but_returns_posts(self) -> None:
         client = MagicMock()
         posts = [{"id": "1", "text": "Hello"}, {"id": "2", "text": "World"}]
-        with patch.object(ai_summarizer, "_get_client", return_value=client):
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_retries", Counter()
+        ):
             result, error = ai_summarizer.summarize_posts(
                 posts, deadline=time.monotonic() - 1
             )
+            # No request was sent, so the fallback never "took over".
+            self.assertEqual(ai_summarizer.retry_report(), [])
 
         client.models.generate_content.assert_not_called()
         self.assertEqual(
@@ -215,6 +221,77 @@ class GeminiTimeLimitTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual([post["summary"] for post in result], ["Single summary."] * 2)
         self.assertEqual(client.models.generate_content.call_count, 3)  # 1 batch + 2 single
+
+    def test_fallback_answer_reaches_run_status_with_retries_and_model(self) -> None:
+        client = MagicMock()
+        client.models.generate_content.side_effect = [
+            ApiError(503)
+        ] * ai_summarizer.BATCH_ATTEMPTS + [MagicMock(text='{"1": "Summary."}')]
+        posts = [{"id": "1", "text": "Hello"}]
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_wait_for_rate_slot", return_value=True
+        ), patch.object(ai_summarizer.time, "sleep"), patch.object(
+            ai_summarizer, "_retries", Counter()
+        ):
+            result, error = ai_summarizer.summarize_posts(posts)
+            retries = ai_summarizer.retry_report()
+
+        self.assertIsNone(error)
+        self.assertEqual(result[0]["model"], ai_summarizer.FALLBACK_MODEL)
+        self.assertIn(f"3x {ai_summarizer.MODEL}: Gemini overloaded (503)", retries)
+        self.assertIn(
+            f"1x {ai_summarizer.FALLBACK_MODEL}: took over after {ai_summarizer.MODEL} failed",
+            retries,
+        )
+
+        rows = dict(email_sender._run_status(result, None, None, retries))
+        self.assertEqual(rows["Problems"], "None")
+        self.assertIn("Gemini overloaded (503)", rows["Retries"])
+        self.assertEqual(
+            rows["Models that answered"], f"{ai_summarizer.FALLBACK_MODEL}: 1 post(s)"
+        )
+
+    def test_failed_batch_names_cause_in_error_and_subject(self) -> None:
+        client = MagicMock()
+        client.models.generate_content.side_effect = ApiError(503)
+        posts = [{"id": "1", "text": "Hello"}]
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_wait_for_rate_slot", return_value=True
+        ), patch.object(ai_summarizer.time, "sleep"), patch.object(
+            ai_summarizer, "_retries", Counter()
+        ):
+            result, error = ai_summarizer.summarize_posts(posts)
+
+        self.assertIn("1 post(s) could not be summarized.\nCauses:", error or "")
+        self.assertIn("Gemini overloaded (503)", error or "")
+        rows = dict(email_sender._run_status(result, None, error, []))
+        self.assertTrue(rows["Problems"].startswith("1 post(s) could not be summarized."))
+        self.assertEqual(rows["Models that answered"], "none (no summary): 1 post(s)")
+        html = email_sender.build_html_digest(result, gemini_error=error, usage=None)
+        self.assertIn("Run status", html)
+        self.assertEqual(
+            email_sender._subject_line(result, None, True), "LinkedIn Digest - 1 New Post [problems]"
+        )
+
+    def test_long_primary_error_does_not_hide_fallback_cause(self) -> None:
+        quota = ApiError(429)
+        quota.args = ("429 RESOURCE_EXHAUSTED PerDay " + "x" * 2000,)
+
+        def respond(model, contents, config):
+            raise quota if model == ai_summarizer.MODEL else ApiError(503)
+
+        client = MagicMock()
+        client.models.generate_content.side_effect = respond
+        with patch.object(ai_summarizer, "_get_client", return_value=client), patch.object(
+            ai_summarizer, "_wait_for_rate_slot", return_value=True
+        ), patch.object(ai_summarizer.time, "sleep"), patch.object(
+            ai_summarizer, "_retries", Counter()
+        ), patch.object(ai_summarizer, "_quota_exhausted", set()):
+            _result, error = ai_summarizer.summarize_posts([{"id": "1", "text": "Hello"}])
+
+        self.assertIn("free-tier daily request quota used up (429)", error or "")
+        self.assertIn(f"{ai_summarizer.FALLBACK_MODEL} gave up", error or "")
+        self.assertIn("Gemini overloaded (503)", error or "")
 
     def test_server_error_failure_has_no_rate_limit_hint(self) -> None:
         client = MagicMock()

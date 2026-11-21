@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from apify_scraper import scrape_profiles, get_apify_usage_stats
-from ai_summarizer import summarize_posts
+from ai_summarizer import retry_report, summarize_posts
 from email_sender import send_digest_email
 from storage import load_profiles, load_seen_ids, save_seen_ids
 from utils import EASTERN, LOOKBACK_HOURS, filter_new_posts
@@ -60,6 +60,7 @@ def main() -> None:
         usage=usage,
         job_start=job_start,
         job_end=job_end,
+        retries=retry_report(),
     )
 
     failures: list[str] = []

@@ -3,6 +3,7 @@ import os
 import random
 import smtplib
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -13,6 +14,47 @@ from utils import EASTERN, convert_to_eastern, extract_post_title, parse_post_da
 SMTP_TIMEOUT_SECONDS = 30
 SMTP_MAX_ATTEMPTS = 3
 SMTP_RETRY_BASE_DELAY = 2.0
+
+
+def _run_status(
+    posts: list[dict],
+    scrape_error: Optional[str],
+    gemini_error: Optional[str],
+    retries: Optional[list[str]],
+) -> list[tuple[str, str]]:
+    """Rows for the always-shown run status block: (label, text)."""
+    problems: list[str] = []
+    if scrape_error:
+        problems.append("Scraper failed (see Scraper Error)")
+    if gemini_error:
+        problems.append(f"{gemini_error.splitlines()[0]} (see Summarization Warning)")
+
+    models = Counter(
+        post.get("model")
+        or ("none needed (empty post)" if not post.get("text") else "none (no summary)")
+        for post in posts
+    )
+    return [
+        ("Problems", "; ".join(problems) or "None"),
+        ("Retries", "; ".join(retries or []) or "None"),
+        (
+            "Models that answered",
+            ", ".join(f"{model}: {count} post(s)" for model, count in models.items())
+            or "No posts to summarize",
+        ),
+    ]
+
+
+def _build_run_status(rows: list[tuple[str, str]]) -> str:
+    items = "".join(
+        f"<div><strong>{html_lib.escape(label)}:</strong> {html_lib.escape(text)}</div>"
+        for label, text in rows
+    )
+    return f"""
+    <div style="background:#f0f4f8;border-radius:8px;padding:12px 20px;margin:20px 0;
+                font-size:13px;line-height:1.6;color:#333;">
+        <div style="font-weight:bold;margin-bottom:4px;">Run status</div>{items}
+    </div>"""
 
 
 def _build_error_banner(scrape_error: str) -> str:
@@ -33,7 +75,7 @@ def _build_gemini_error_banner(gemini_error: str) -> str:
         <div style="color:#f57f17;font-weight:bold;font-size:15px;margin-bottom:6px;">
             Summarization Warning
         </div>
-        <div style="color:#333;font-size:14px;line-height:1.5;">{html_lib.escape(gemini_error)}</div>
+        <div style="color:#333;font-size:14px;line-height:1.5;white-space:pre-line;">{html_lib.escape(gemini_error)}</div>
     </div>"""
 
 
@@ -127,6 +169,7 @@ def build_html_digest(
     usage: Optional[dict] = None,
     job_start: Optional[datetime] = None,
     job_end: Optional[datetime] = None,
+    retries: Optional[list[str]] = None,
 ) -> str:
     now_et = job_start if job_start is not None else datetime.now(EASTERN)
 
@@ -153,7 +196,8 @@ def build_html_digest(
         <p style="font-size:13px;margin:4px 0 0;">Started: {job_start.strftime("%I:%M:%S %p %Z") if job_start is not None else "N/A"}</p>
         <p style="font-size:13px;margin:2px 0 0;">Completed: {job_end.strftime("%I:%M:%S %p %Z") if job_end is not None else "N/A"}</p>
     </div>
-    <div class="content">"""
+    <div class="content">""",
+        _build_run_status(_run_status(posts, scrape_error, gemini_error, retries)),
     ]
 
     if scrape_error:
@@ -198,6 +242,7 @@ def build_plain_digest(
     usage: Optional[dict] = None,
     job_start: Optional[datetime] = None,
     job_end: Optional[datetime] = None,
+    retries: Optional[list[str]] = None,
 ) -> str:
     now_et = job_start if job_start is not None else datetime.now(EASTERN)
     lines: list[str] = [
@@ -205,6 +250,12 @@ def build_plain_digest(
         now_et.strftime("%B %d, %Y"),
         f"Started: {job_start.strftime('%I:%M:%S %p %Z') if job_start is not None else 'N/A'}",
         f"Completed: {job_end.strftime('%I:%M:%S %p %Z') if job_end is not None else 'N/A'}",
+        "",
+        "RUN STATUS",
+        *(
+            f"{label}: {text}"
+            for label, text in _run_status(posts, scrape_error, gemini_error, retries)
+        ),
         "",
     ]
 
@@ -245,13 +296,16 @@ def build_plain_digest(
     return "\n".join(lines)
 
 
-def _subject_line(posts: list[dict], scrape_error: Optional[str]) -> str:
+def _subject_line(
+    posts: list[dict], scrape_error: Optional[str], has_problems: bool = False
+) -> str:
     if scrape_error:
         return "LinkedIn Digest - Scraper Error"
+    flag = " [problems]" if has_problems else ""
     if not posts:
-        return "LinkedIn Digest - No New Posts Today"
+        return f"LinkedIn Digest - No New Posts Today{flag}"
     count = len(posts)
-    return f"LinkedIn Digest - {count} New Post{'s' if count != 1 else ''}"
+    return f"LinkedIn Digest - {count} New Post{'s' if count != 1 else ''}{flag}"
 
 
 def send_digest_email(
@@ -261,6 +315,7 @@ def send_digest_email(
     usage: Optional[dict] = None,
     job_start: Optional[datetime] = None,
     job_end: Optional[datetime] = None,
+    retries: Optional[list[str]] = None,
 ) -> bool:
     """Send the digest email.
 
@@ -278,7 +333,8 @@ def send_digest_email(
 
     try:
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = _subject_line(posts, scrape_error)
+        status = _run_status(posts, scrape_error, gemini_error, retries)
+        msg["Subject"] = _subject_line(posts, scrape_error, status[0][1] != "None")
         msg["From"] = sender
         msg["To"] = recipient
 
@@ -292,6 +348,7 @@ def send_digest_email(
                     usage=usage,
                     job_start=job_start,
                     job_end=job_end,
+                    retries=retries,
                 ),
                 "plain",
             )
@@ -305,6 +362,7 @@ def send_digest_email(
                     usage=usage,
                     job_start=job_start,
                     job_end=job_end,
+                    retries=retries,
                 ),
                 "html",
             )

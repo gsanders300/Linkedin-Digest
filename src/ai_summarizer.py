@@ -4,6 +4,7 @@ import os
 import random
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
@@ -73,6 +74,21 @@ _next_request_at = 0.0
 # would fail the same way until the quota resets.
 _quota_exhausted: set[str] = set()
 
+# Every retry this run, as "model: why" -> count, for the digest's run status.
+_retries: Counter[str] = Counter()
+_retries_lock = threading.Lock()
+
+
+def _note_retry(reason: str, count: int = 1) -> None:
+    with _retries_lock:
+        _retries[reason] += count
+
+
+def retry_report() -> list[str]:
+    """Return one line per kind of retry this run, e.g. "3x gemini-x: Gemini overloaded (503)"."""
+    with _retries_lock:
+        return [f"{count}x {reason}" for reason, count in _retries.items()]
+
 
 class _PermanentGeminiError(RuntimeError):
     """A Gemini response that should not be retried."""
@@ -121,6 +137,24 @@ def _is_retryable(exc: Exception) -> bool:
     if status is None:
         return True
     return status in {408, 409, 425, 429} or status >= 500
+
+
+def _failure_reason(exc: Exception) -> str:
+    """Name the cause of a failed Gemini call in a short phrase for the email."""
+    if isinstance(exc, _PermanentGeminiError):
+        return str(exc).rstrip(".")
+    status = _error_status_code(exc)
+    if _is_daily_quota(exc):
+        return "free-tier daily request quota used up (429)"
+    if status == 429:
+        return "free-tier per-minute rate limit hit (429)"
+    if status == 503:
+        return "Gemini overloaded (503)"
+    if status == 504:
+        return "Gemini timed out (504)"
+    if status is not None:
+        return f"Gemini returned HTTP {status}"
+    return f"{type(exc).__name__} (no HTTP status; see job log)"
 
 
 def _retry_after(exc: Exception) -> float | None:
@@ -172,9 +206,11 @@ def summarize_post(post: dict, deadline: float = math.inf) -> str:
     errors: list[str] = []
     for model, attempts in ((MODEL, MAX_RETRIES), (FALLBACK_MODEL, FALLBACK_ATTEMPTS)):
         try:
-            return _generate_with_retries(
+            summary = _generate_with_retries(
                 model, prompt, f"post {post.get('id', '?')}", deadline, attempts=attempts
             )
+            post["model"] = model
+            return summary
         except RuntimeError as exc:
             errors.append(str(exc))
             if model != FALLBACK_MODEL:
@@ -238,11 +274,13 @@ def _summarize_batch(posts: list[dict], deadline: float) -> dict[int, str]:
         answers = json.loads(text)
     except json.JSONDecodeError as exc:
         print(f"Warning: {label} returned invalid JSON ({exc}); summarizing them one at a time.")
+        _note_retry(f"{model}: batch reply was invalid JSON; post re-asked alone", len(posts))
         return {}
     if not isinstance(answers, dict):
         print(f"Warning: {label} returned JSON that isn't an object; summarizing them one at a time.")
+        _note_retry(f"{model}: batch reply wasn't a JSON object; post re-asked alone", len(posts))
         return {}
-    return {
+    summaries = {
         int(key) - 1: summary.strip()
         for key, summary in answers.items()
         if key.isdecimal()
@@ -250,6 +288,14 @@ def _summarize_batch(posts: list[dict], deadline: float) -> dict[int, str]:
         and isinstance(summary, str)
         and summary.strip()
     }
+    for index in summaries:
+        posts[index]["model"] = model
+    if len(summaries) < len(posts):
+        _note_retry(
+            f"{model}: batch reply skipped a post; post re-asked alone",
+            len(posts) - len(summaries),
+        )
+    return summaries
 
 
 def _generate_with_retries(
@@ -267,6 +313,9 @@ def _generate_with_retries(
             raise RuntimeError(f"Skipped {label}: {model}'s daily quota is used up.")
         if not _wait_for_rate_slot(deadline):
             raise RuntimeError(f"Skipped {label}: the summarization time limit ran out.")
+        if attempt == 1 and model == FALLBACK_MODEL:
+            # Both callers try FALLBACK_MODEL only after MODEL failed.
+            _note_retry(f"{model}: took over after {MODEL} failed")
         try:
             response = _get_client().models.generate_content(
                 model=model, contents=prompt, config=config
@@ -291,6 +340,7 @@ def _generate_with_retries(
                 f"Warning: {model} attempt {attempt}/{attempts} failed for {label} "
                 f"— retrying in {delay:.1f}s. Error: {exc}"
             )
+            _note_retry(f"{model}: {_failure_reason(exc)}")
             time.sleep(delay)
 
     hint = ""
@@ -308,8 +358,9 @@ def _generate_with_retries(
             "in Google AI Studio."
         )
     raise RuntimeError(
-        f"{model} error for {label} after {attempt} "
-        f"attempt(s): {last_exc}{hint}"
+        f"{model} gave up on {label} after {attempt} attempt(s): "
+        # Cap the raw error so a long quota body can't push the next model's cause out.
+        f"{_failure_reason(last_exc)}.{hint} Details: {str(last_exc)[:300]}"
     ) from last_exc
 
 
@@ -380,12 +431,10 @@ def summarize_posts(
                 print(f"Warning: {exc}")
 
     if errors:
-        # Deduplicate while preserving order.
-        unique_errors = list(dict.fromkeys(errors))
-        error_message = (
-            f"{len(errors)} post(s) could not be summarized. "
-            f"First error: {unique_errors[0]}"
+        causes = "\n".join(
+            f"- {count} post(s): {error}" for error, count in Counter(errors).items()
         )
+        error_message = f"{len(errors)} post(s) could not be summarized.\nCauses:\n{causes}"
         return posts, error_message
 
     return posts, None
