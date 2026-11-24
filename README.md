@@ -12,11 +12,11 @@ Each run:
 
 1. Scrapes the last 36 hours of posts from the profiles listed in `config/profiles.txt` with the [Apify](https://apify.com/) actor [`harvestapi/linkedin-profile-posts`](https://apify.com/harvestapi/linkedin-profile-posts).
 2. Drops posts it has already emailed you, using `data/seen_posts.json`.
-3. Summarizes each new post in 2 sentences with Google Gemini, 10 posts per request, switching to a fallback model if the first one is overloaded or unavailable.
+3. Summarizes each new post in 2 sentences with Claude Haiku 5.5, 10 posts per request, switching to Google Gemini if Claude is overloaded or unavailable.
 4. Emails an HTML and plain-text digest through Gmail, grouped by author, with your Apify credit usage at the bottom.
 5. Commits the new post IDs back to the repo so tomorrow's run skips them.
 
-If scraping or summarization fails, you still get an email that explains what went wrong. Every email opens with a **Run status** block: any problems, every retry and what caused it, and which Gemini model summarized how many posts. The subject ends in `[problems]` when something failed.
+If scraping or summarization fails, you still get an email that explains what went wrong. Every email opens with a **Run status** block: any problems, every retry and what caused it, and which model summarized how many posts. The subject ends in `[problems]` when something failed.
 
 > **Disclaimer:** This is an unofficial personal project, not affiliated with or endorsed by LinkedIn or Apify. Scraping is done by a third-party Apify actor. You're responsible for making sure your use complies with LinkedIn's User Agreement, Apify's terms, and the laws that apply to you. Only monitor public content.
 
@@ -26,21 +26,23 @@ If scraping or summarization fails, you still get an email that explains what we
 
 **You don't need to install anything.** The digest runs entirely on GitHub, and every setup step happens in your browser. It also never asks for your LinkedIn login.
 
-You need 4 accounts:
+You need 5 accounts:
 
 | Account | Used for | Cost |
 |---|---|---|
 | GitHub | Runs the daily job, stores your keys | Free |
 | [Apify](https://apify.com/) | Scrapes the posts | Pay per post |
-| [Google AI Studio](https://aistudio.google.com/) | Gemini summaries | Free tier |
+| [Claude Console](https://platform.claude.com/) | Claude summaries | Pay per use |
+| [Google AI Studio](https://aistudio.google.com/) | Gemini summaries when Claude fails | Free tier |
 | Gmail or Google Workspace | Sends the digest | Free |
 
 - **GitHub:** a run takes about 1-4 minutes for 30-odd profiles, well within GitHub's free Actions minutes for private repos.
 - **Apify:** see the [actor's pricing](https://apify.com/harvestapi/linkedin-profile-posts). It fetches at most 2 posts per profile per day, so 30 profiles means at most 60 results a day, and usually fewer.
-- **Gemini:** the free tier should be enough. Posts go 10 to a request, so a typical day takes 2-4 requests, and the code stays under 5 requests a minute.
+- **Claude:** billed per token. Posts go 10 to a request, so a typical day takes 2-4 requests.
+- **Gemini:** the free tier should be enough, since Gemini only runs when Claude fails. The code stays under 5 requests a minute.
 - **Gmail:** needs 2-Step Verification and App Passwords, which some work accounts block.
 
-Apify is the only part likely to cost money. The digest can go to any email address; only the sending account has to be Gmail.
+Apify and Claude are the parts that cost money. The digest can go to any email address; only the sending account has to be Gmail.
 
 Installing software is only needed if you want to [run or change the code on your own computer](#running-locally-optional).
 
@@ -57,16 +59,18 @@ Forking also works and makes it easier to pull future updates, but forks of a pu
 ### 2. Get your API keys
 
 1. **Apify token.** Sign up at [apify.com](https://apify.com/), then copy your API token from **Settings → API & Integrations**.
-2. **Gemini key.** Go to [Google AI Studio](https://aistudio.google.com/), click **Get API key**, and create one.
-3. **Gmail App Password.** Turn on [2-Step Verification](https://myaccount.google.com/signinoptions/twosv) for the Gmail account that will send the digest, then create an [App Password](https://myaccount.google.com/apppasswords). Copy the 16-character password **without spaces**. Don't use your normal Gmail password. If the App Passwords page says the setting isn't available, 2-Step Verification is off or your Google Workspace admin has blocked App Passwords.
+2. **Claude key.** Go to the [Claude Console](https://platform.claude.com/), open **API keys**, and create one.
+3. **Gemini key.** Go to [Google AI Studio](https://aistudio.google.com/), click **Get API key**, and create one.
+4. **Gmail App Password.** Turn on [2-Step Verification](https://myaccount.google.com/signinoptions/twosv) for the Gmail account that will send the digest, then create an [App Password](https://myaccount.google.com/apppasswords). Copy the 16-character password **without spaces**. Don't use your normal Gmail password. If the App Passwords page says the setting isn't available, 2-Step Verification is off or your Google Workspace admin has blocked App Passwords.
 
 ### 3. Add the secrets to GitHub
 
-In your copy, go to **Settings → Secrets and variables → Actions → New repository secret** and add these 5 secrets:
+In your copy, go to **Settings → Secrets and variables → Actions → New repository secret** and add these 6 secrets:
 
 | Secret | Value |
 |---|---|
 | `APIFY_API_TOKEN` | Your Apify API token |
+| `ANTHROPIC_API_KEY` | Your Claude API key |
 | `GEMINI_API_KEY` | Your Gemini API key |
 | `GMAIL_ADDRESS` | The Gmail address that sends the digest |
 | `GMAIL_APP_PASSWORD` | The 16-character App Password, no spaces |
@@ -129,7 +133,7 @@ Only needed if you want to change the code or test a change before pushing it. R
 git clone https://github.com/<OWNER>/<REPO>.git
 cd <REPO>
 
-# Fill in the same 5 values you added as GitHub secrets
+# Fill in the same 6 values you added as GitHub secrets
 cp .env.example .env
 
 # With uv
@@ -169,8 +173,9 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 |---|---|
 | Who you follow | `config/profiles.txt` |
 | Summary length or style | `SUMMARY_PROMPT_TEMPLATE` in `src/ai_summarizer.py` |
-| Gemini model | `MODEL` and `FALLBACK_MODEL` in `src/ai_summarizer.py` ([available models](https://ai.google.dev/gemini-api/docs/models)) |
-| Gemini rate limit | `REQUESTS_PER_MINUTE`, `MAX_WORKERS`, and `BATCH_SIZE` (posts per request) in `src/ai_summarizer.py` |
+| Summary models | `MODEL` (Claude) and `FALLBACK_MODEL` (Gemini, [available models](https://ai.google.dev/gemini-api/docs/models)) in `src/ai_summarizer.py` |
+| Claude thinking effort | `CLAUDE_EFFORT` in `src/ai_summarizer.py` (default `high`) |
+| Request rate limit | `REQUESTS_PER_MINUTE`, `MAX_WORKERS`, and `BATCH_SIZE` (posts per request) in `src/ai_summarizer.py` |
 | Posts fetched per profile | `maxPosts` in `scrape_profiles()` in `src/apify_scraper.py` (default 2, to keep Apify costs down) |
 | Email design | The `<style>` block in `build_html_digest()`, plus the inline styles in the banner, notice, and footer helpers, in `src/email_sender.py` |
 | Display time zone | `EASTERN` in `src/utils.py` (default `America/New_York`) |
@@ -190,7 +195,7 @@ If you forked instead, click **Sync fork** on your fork's main page.
 To get every update without copying code, keep only your settings in a private repository and let this repo's code run on them:
 
 1. Make a private repository with your `config/profiles.txt` and, if you have one, your `data/seen_posts.json`.
-2. Add the 5 secrets from step 3 to it.
+2. Add the 6 secrets from step 3 to it.
 3. Add `.github/workflows/daily-linkedin-check.yml` with this content:
 
    ```yaml
@@ -211,6 +216,7 @@ To get every update without copying code, keep only your settings in a private r
        uses: gsanders300/Linkedin-Digest/.github/workflows/private-digest.yml@main
        secrets:
          APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
+         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -233,8 +239,8 @@ utils.filter_new_posts()            Keep posts from the last 36 hours
         │
 dedup against data/seen_posts.json  Skip posts already emailed
         │
-ai_summarizer.summarize_posts()     Gemini, 10 posts per request, ≤4 requests/min,
-        │                           retries with backoff, then FALLBACK_MODEL,
+ai_summarizer.summarize_posts()     Claude, 10 posts per request, ≤4 requests/min,
+        │                           retries with backoff, then Gemini (FALLBACK_MODEL),
         │                           then 1 request per post the batch missed
         │
 email_sender.send_digest_email()    Gmail SMTP over SSL, retries transient failures
@@ -270,7 +276,7 @@ Design choices worth knowing:
 ├── src/
 │   ├── main.py                                  Entry point and pipeline
 │   ├── apify_scraper.py                         Apify scrape and credit usage
-│   ├── ai_summarizer.py                         Gemini summaries
+│   ├── ai_summarizer.py                         Claude summaries, Gemini fallback
 │   ├── email_sender.py                          Digest builder and Gmail sender
 │   ├── storage.py                               Profile list and seen-ID persistence
 │   └── utils.py                                 Date and text helpers
@@ -287,7 +293,7 @@ Design choices worth knowing:
 | Symptom | Likely cause and fix |
 |---|---|
 | Email subject says **Scraper Error** | The banner in the email has the details. "Insufficient credits" means your Apify plan is used up for the month. |
-| Email shows a **Summarization Warning** | Gemini failed for some posts even after retrying and trying the fallback model. Those posts show "Summary unavailable." The warning lists each distinct cause with its post count: "Gemini overloaded (503)" means both models were overloaded, which is usually temporary. "Rate limit hit" means a model allows fewer requests than `REQUESTS_PER_MINUTE`. "Daily quota used up" means `MODEL`'s free tier allows fewer requests a day than the digest needs, so pick a model with a higher daily limit. "Gemini timed out (504)" means Gemini took longer than `REQUEST_TIMEOUT_MS`. A key error means `GEMINI_API_KEY` is wrong, and "time limit ran out" means a very busy day hit the 14-minute summarization limit. |
+| Email shows a **Summarization Warning** | Claude and Gemini both failed for some posts, even after retrying. Those posts show "Summary unavailable." The warning lists each distinct cause with its post count: "Claude overloaded (529)" and "Gemini overloaded (503)" are usually temporary. "Rate limit hit" means a model allows fewer requests than `REQUESTS_PER_MINUTE`. "Daily quota used up" means `FALLBACK_MODEL`'s free tier allows fewer requests a day than the digest needs, so pick a Gemini model with a higher daily limit. "Claude timed out" and "Gemini timed out (504)" mean the model took longer than `REQUEST_TIMEOUT_MS`. "Claude returned HTTP 401" or a Gemini key error means `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` is wrong, and "time limit ran out" means a very busy day hit the 14-minute summarization limit. |
 | No email at all | Check the run log in the Actions tab. `Gmail authentication failed` means the App Password is wrong or 2-Step Verification is off. |
 | Scheduled run never starts | Make sure Actions is enabled on your copy and the workflow has a `schedule` block (see step 6). |
 | Same posts emailed twice | The **Persist seen post IDs** step couldn't push, so the post IDs weren't saved. Check that step's log; a branch protection rule or ruleset on your default branch is the usual cause. |

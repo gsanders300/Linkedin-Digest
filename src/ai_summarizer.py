@@ -8,26 +8,33 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
+import anthropic
 from google import genai
 from google.genai import types
 
-# Free-tier daily quotas are small (gemini-4-hydrogen's was 20 requests a day), so posts
-# are summarized BATCH_SIZE to a request (see summarize_posts), not one request per post.
-MODEL = "gemini-3.5-flash-lite"
-# Tried after MODEL exhausts its retries, e.g. during a 503 "high demand" spike. Its
-# 20-a-day free-tier limit covers a short spike, not a whole digest failing over.
-FALLBACK_MODEL = "gemini-3.8-flash"
+# Posts are summarized BATCH_SIZE to a request (see summarize_posts), not one request
+# per post, so a day takes a few requests.
+MODEL = "claude-haiku-5-5"
+# Haiku 5.5 thinks before it answers. Its default effort is medium.
+CLAUDE_EFFORT = "high"
+# The thinking counts against max_tokens, so leave room for it and a 10-post JSON reply.
+CLAUDE_MAX_TOKENS = 16_000
+# Tried after MODEL exhausts its retries, e.g. during an outage or a 529 overload.
+# Free-tier Gemini daily quotas are small (gemini-4-hydrogen's was 20 requests a day),
+# so it covers a Claude outage, not every day's digest.
+FALLBACK_MODEL = "gemini-3.5-flash-lite"
 
-# The SDK sets no HTTP timeout by default, so one hung request could hold the job
-# until GitHub kills it and no digest is sent. The SDK also sends this to Gemini as
-# X-Server-Timeout, so a slow response comes back as 504 DEADLINE_EXCEEDED. A 10-post
-# batch took 42-44s on gemini-4-hydrogen and hit 60s once under load.
+# One hung request could hold the job until GitHub kills it and no digest is sent, so
+# both clients time out after this. The Gemini SDK also sends it as X-Server-Timeout,
+# so a slow response comes back as 504 DEADLINE_EXCEEDED. A 10-post batch took 42-44s
+# on gemini-4-hydrogen and hit 60s once under load.
 REQUEST_TIMEOUT_MS = 120_000
 
-# The Gemini client is created lazily rather than at import time, so a missing or
-# invalid GEMINI_API_KEY becomes a caught, reportable error in the digest instead
-# of crashing main.py on import before any email can be sent.
+# The clients are created lazily rather than at import time, so a missing or invalid
+# key becomes a caught, reportable error in the digest instead of crashing main.py on
+# import before any email can be sent.
 _client: genai.Client | None = None
+_claude_client: anthropic.Anthropic | None = None
 
 
 def _get_client() -> genai.Client:
@@ -42,6 +49,20 @@ def _get_client() -> genai.Client:
             http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_MS),
         )
     return _client
+
+
+def _get_claude_client() -> anthropic.Anthropic:
+    """Return a cached Claude client, raising a clear error if the key is missing."""
+    global _claude_client
+    if _claude_client is None:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set.")
+        # No SDK retries: _generate_with_retries retries and records each one.
+        _claude_client = anthropic.Anthropic(
+            api_key=api_key, timeout=REQUEST_TIMEOUT_MS / 1000, max_retries=0
+        )
+    return _claude_client
 
 
 # Bound request starts to four per minute, under the 5 RPM free tier gemini-4-hydrogen had.
@@ -90,8 +111,8 @@ def retry_report() -> list[str]:
         return [f"{count}x {reason}" for reason, count in _retries.items()]
 
 
-class _PermanentGeminiError(RuntimeError):
-    """A Gemini response that should not be retried."""
+class _PermanentModelError(RuntimeError):
+    """A model response that should not be retried."""
 
 
 def _wait_for_rate_slot(deadline: float = math.inf) -> bool:
@@ -118,8 +139,10 @@ def _error_status_code(exc: Exception) -> int | None:
     response = getattr(exc, "response", None)
     candidates.append(getattr(response, "status_code", None))
     for value in candidates:
+        if value is None:
+            continue
         try:
-            return int(value) if value is not None else None
+            return int(value)
         except (TypeError, ValueError):
             continue
     return None
@@ -131,7 +154,7 @@ def _is_daily_quota(exc: Exception) -> bool:
 
 
 def _is_retryable(exc: Exception) -> bool:
-    if isinstance(exc, _PermanentGeminiError) or _is_daily_quota(exc):
+    if isinstance(exc, _PermanentModelError) or _is_daily_quota(exc):
         return False
     status = _error_status_code(exc)
     if status is None:
@@ -140,10 +163,20 @@ def _is_retryable(exc: Exception) -> bool:
 
 
 def _failure_reason(exc: Exception) -> str:
-    """Name the cause of a failed Gemini call in a short phrase for the email."""
-    if isinstance(exc, _PermanentGeminiError):
+    """Name the cause of a failed model call in a short phrase for the email."""
+    if isinstance(exc, _PermanentModelError):
         return str(exc).rstrip(".")
     status = _error_status_code(exc)
+    if isinstance(exc, anthropic.APITimeoutError):
+        return "Claude timed out"
+    if isinstance(exc, anthropic.APIConnectionError):
+        return "could not connect to Claude"
+    if isinstance(exc, anthropic.APIStatusError):
+        if status == 429:
+            return "Claude rate limit hit (429)"
+        if status == 529:
+            return "Claude overloaded (529)"
+        return f"Claude returned HTTP {status}"
     if _is_daily_quota(exc):
         return "free-tier daily request quota used up (429)"
     if status == 429:
@@ -298,6 +331,21 @@ def _summarize_batch(posts: list[dict], deadline: float) -> dict[int, str]:
     return summaries
 
 
+def _call_claude(prompt: str) -> str:
+    """Ask MODEL once; raise _PermanentModelError for a refusal or a cut-off reply."""
+    response = _get_claude_client().messages.create(
+        model=MODEL,
+        max_tokens=CLAUDE_MAX_TOKENS,
+        output_config={"effort": CLAUDE_EFFORT},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    if response.stop_reason == "refusal":
+        raise _PermanentModelError("Claude declined to summarize it.")
+    if response.stop_reason == "max_tokens":
+        raise _PermanentModelError(f"Claude's reply hit max_tokens ({CLAUDE_MAX_TOKENS}).")
+    return "".join(block.text for block in response.content if block.type == "text")
+
+
 def _generate_with_retries(
     model: str,
     prompt: str,
@@ -306,7 +354,10 @@ def _generate_with_retries(
     attempts: int = MAX_RETRIES,
     config: types.GenerateContentConfig | None = None,
 ) -> str:
-    """Call one Gemini model with retries; raise RuntimeError when it gives up."""
+    """Call one model with retries; raise RuntimeError when it gives up.
+
+    config applies to Gemini only.
+    """
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         if model in _quota_exhausted:
@@ -317,12 +368,14 @@ def _generate_with_retries(
             # Both callers try FALLBACK_MODEL only after MODEL failed.
             _note_retry(f"{model}: took over after {MODEL} failed")
         try:
-            response = _get_client().models.generate_content(
-                model=model, contents=prompt, config=config
-            )
-            summary = response.text
+            if model == MODEL:
+                summary = _call_claude(prompt)
+            else:
+                summary = _get_client().models.generate_content(
+                    model=model, contents=prompt, config=config
+                ).text
             if not isinstance(summary, str) or not summary.strip():
-                raise _PermanentGeminiError("Gemini returned an empty response.")
+                raise _PermanentModelError("The model returned an empty response.")
             return summary.strip()
         except Exception as exc:
             last_exc = exc
@@ -347,10 +400,10 @@ def _generate_with_retries(
     if _is_daily_quota(last_exc):
         hint = (
             f" Daily quota used up: {model}'s free tier allows too few requests a day. "
-            "Set MODEL in src/ai_summarizer.py to a model with a higher daily limit, "
+            "Set FALLBACK_MODEL in src/ai_summarizer.py to a model with a higher daily limit, "
             "or enable billing in Google AI Studio."
         )
-    elif _error_status_code(last_exc) == 429:
+    elif model == FALLBACK_MODEL and _error_status_code(last_exc) == 429:
         hint = (
             f" Rate limit hit: {model} allows fewer than REQUESTS_PER_MINUTE "
             f"({REQUESTS_PER_MINUTE}) requests a minute, or its daily quota is used up. "
@@ -385,9 +438,10 @@ def summarize_posts(
     if not posts:
         return posts, None
 
-    # Validate the client once up front so a missing or invalid key fails fast and
-    # cleanly, instead of driving every post through the full retry/backoff loop.
+    # Validate the clients once up front so a missing key fails fast and cleanly,
+    # instead of driving every post through the full retry/backoff loop.
     try:
+        _get_claude_client()
         _get_client()
     except RuntimeError as exc:
         for post in posts:
